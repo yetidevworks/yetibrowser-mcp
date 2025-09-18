@@ -1,3 +1,45 @@
+interface DomSnapshotEntry {
+    selector: string;
+    role: string;
+    name: string;
+}
+interface DomSnapshot {
+    title: string;
+    url: string;
+    capturedAt: string;
+    entries: DomSnapshotEntry[];
+}
+interface ConsoleLogEntry {
+    level: string;
+    message: string;
+    timestamp: number;
+    stack?: string;
+}
+interface PageStateStorageEntry {
+    key: string;
+    value: string;
+}
+interface PageStateFormField {
+    selector: string;
+    name?: string;
+    type?: string;
+    value?: string;
+    label?: string;
+}
+interface PageStateForm {
+    selector: string;
+    name?: string;
+    method?: string;
+    action?: string;
+    fields: PageStateFormField[];
+}
+interface PageStateSnapshot {
+    forms: PageStateForm[];
+    localStorage: PageStateStorageEntry[];
+    sessionStorage: PageStateStorageEntry[];
+    cookies: PageStateStorageEntry[];
+    capturedAt: string;
+}
 type EmptyPayload = Record<string, never>;
 interface CommandPayloadMap {
     ping: EmptyPayload;
@@ -38,6 +80,7 @@ interface CommandPayloadMap {
         fullPage?: boolean;
     };
     getConsoleLogs: EmptyPayload;
+    pageState: EmptyPayload;
 }
 interface CommandResultMap {
     ping: {
@@ -50,7 +93,8 @@ interface CommandResultMap {
         title: string;
     };
     snapshot: {
-        snapshot: string;
+        formatted: string;
+        raw: DomSnapshot;
     };
     navigate: {
         ok: true;
@@ -83,11 +127,8 @@ interface CommandResultMap {
         data: string;
         mimeType: string;
     };
-    getConsoleLogs: Array<{
-        level: string;
-        message: string;
-        timestamp: number;
-    }>;
+    getConsoleLogs: ConsoleLogEntry[];
+    pageState: PageStateSnapshot;
 }
 type CommandName = keyof CommandPayloadMap;
 type CommandPayload<K extends CommandName> = CommandPayloadMap[K];
@@ -120,6 +161,7 @@ type BridgeServerMessage = BridgeCallMessage;
 type BridgeClientMessage = BridgeHelloMessage | BridgeResultMessage | BridgeEventMessage;
 declare const TOOL_NAMES: {
     readonly SNAPSHOT: "browser_snapshot";
+    readonly SNAPSHOT_DIFF: "browser_snapshot_diff";
     readonly NAVIGATE: "browser_navigate";
     readonly GO_BACK: "browser_go_back";
     readonly GO_FORWARD: "browser_go_forward";
@@ -131,6 +173,7 @@ declare const TOOL_NAMES: {
     readonly SELECT_OPTION: "browser_select_option";
     readonly SCREENSHOT: "browser_screenshot";
     readonly CONSOLE_LOGS: "browser_get_console_logs";
+    readonly PAGE_STATE: "browser_page_state";
 };
 type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 interface ToolResponse {
@@ -145,4 +188,4 @@ interface ToolResponse {
     isError?: boolean;
 }
 
-export { type BridgeCallMessage, type BridgeClientMessage, type BridgeEventMessage, type BridgeHelloMessage, type BridgeResultMessage, type BridgeServerMessage, type CommandName, type CommandPayload, type CommandPayloadMap, type CommandResult, type CommandResultMap, type EmptyPayload, TOOL_NAMES, type ToolName, type ToolResponse };
+export { type BridgeCallMessage, type BridgeClientMessage, type BridgeEventMessage, type BridgeHelloMessage, type BridgeResultMessage, type BridgeServerMessage, type CommandName, type CommandPayload, type CommandPayloadMap, type CommandResult, type CommandResultMap, type ConsoleLogEntry, type DomSnapshot, type DomSnapshotEntry, type EmptyPayload, type PageStateForm, type PageStateFormField, type PageStateSnapshot, type PageStateStorageEntry, TOOL_NAMES, type ToolName, type ToolResponse };

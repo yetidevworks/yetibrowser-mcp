@@ -1,4 +1,11 @@
 const statusEl = document.getElementById("status") as HTMLDivElement;
+const connectedTabEl = document.getElementById("connected-tab") as HTMLElement;
+const serverStatusEl = document.getElementById("server-status") as HTMLElement;
+const tabInfoContainer = document.getElementById("tab-info") as HTMLDivElement;
+const nameEl = document.getElementById("tab-name") as HTMLSpanElement;
+const urlEl = document.getElementById("tab-url") as HTMLAnchorElement;
+const goToTabButton = document.getElementById("go-to-tab") as HTMLButtonElement;
+const iconEl = document.getElementById("header-icon") as HTMLImageElement;
 const connectButton = document.getElementById("connect") as HTMLButtonElement;
 const disconnectButton = document.getElementById("disconnect") as HTMLButtonElement;
 
@@ -40,12 +47,19 @@ void refresh();
 async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
   const activeTab = await getActiveTab();
-  updateUi(state, activeTab);
+  const connectedTab = state?.tabId
+    ? await chrome.tabs
+        .get(state.tabId)
+        .catch(() => undefined)
+    : undefined;
+
+  updateUi(state, activeTab, connectedTab);
 }
 
 function updateUi(
   state: { tabId: number | null; socketConnected: boolean; wsPort: number },
   activeTab: chrome.tabs.Tab | undefined,
+  connectedTab: chrome.tabs.Tab | undefined,
 ) {
   const { tabId, socketConnected, wsPort } = state;
 
@@ -54,30 +68,83 @@ function updateUi(
 
   connectButton.disabled = !activeTabId || isConnectedToActive || !isUrlAllowed(activeTab?.url ?? "");
   disconnectButton.disabled = tabId === null;
+  goToTabButton.disabled = tabId === null;
 
-  const parts: string[] = [];
-  if (tabId) {
-    parts.push(`Connected: tab ${tabId}`);
-    if (!isConnectedToActive) {
-      parts.push("(switch to the connected tab to interact)");
+  if (tabId && connectedTab) {
+    const suffix = isConnectedToActive ? " (current)" : "";
+    connectedTabEl.textContent = `#${tabId}${suffix}`;
+    connectedTabEl.classList.remove("error");
+  } else {
+    connectedTabEl.textContent = "None";
+    connectedTabEl.classList.add("error");
+  }
+
+  if (socketConnected) {
+    serverStatusEl.textContent = `ws://localhost:${wsPort}`;
+    serverStatusEl.classList.remove("error");
+  } else {
+    serverStatusEl.textContent = "No server found";
+    serverStatusEl.classList.add("error");
+  }
+
+  statusEl.classList.remove("error");
+  if (lastError) {
+    statusEl.textContent = lastError;
+    statusEl.classList.add("error");
+  } else if (tabId && !isConnectedToActive) {
+    statusEl.textContent = "We’ll interact with this tab even if another is focused.";
+  } else {
+    statusEl.textContent = tabId ? "Connected" : "Not connected";
+    if (!tabId) {
+      statusEl.classList.add("error");
+    }
+  }
+
+  if (connectedTab) {
+    tabInfoContainer.hidden = false;
+    nameEl.textContent = truncate(connectedTab.title ?? "Untitled");
+    const href = connectedTab.url ?? "";
+    if (href) {
+      urlEl.textContent = truncate(href, 60);
+      urlEl.href = href;
+      urlEl.hidden = false;
+    } else {
+      urlEl.textContent = "";
+      urlEl.removeAttribute("href");
+      urlEl.hidden = true;
     }
   } else {
-    parts.push("No tab connected");
+    tabInfoContainer.hidden = true;
+    nameEl.textContent = "";
+    urlEl.textContent = "";
+    urlEl.removeAttribute("href");
+    urlEl.hidden = true;
   }
 
-  parts.push(socketConnected ? `Server: ws://localhost:${wsPort}` : "Server: not connected");
-
-  if (lastError) {
-    parts.push(`Error: ${lastError}`);
-  }
-
-  statusEl.textContent = parts.join("\n");
+  iconEl.hidden = false;
 }
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   return tabs[0];
 }
+
+goToTabButton.addEventListener("click", async () => {
+  const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
+  if (!state?.tabId) {
+    return;
+  }
+  try {
+    await chrome.tabs.update(state.tabId, { active: true });
+    const tab = await chrome.tabs.get(state.tabId);
+    if (tab.windowId !== undefined) {
+      await chrome.windows.update(tab.windowId, { focused: true });
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+    await refresh();
+  }
+});
 
 function isUrlAllowed(url: string): boolean {
   if (!url) {
@@ -90,4 +157,11 @@ function isUrlAllowed(url: string): boolean {
     return false;
   }
   return true;
+}
+
+function truncate(value: string, max = 40): string {
+  if (value.length <= max) {
+    return value;
+  }
+  return `${value.slice(0, max - 1)}…`;
 }

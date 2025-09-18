@@ -32,7 +32,7 @@ var ExtensionBridge = class {
       console.error("WebSocket server error", error);
     });
     await once(this.wss, "listening");
-    console.log(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
+    console.error(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
   }
   isConnected() {
     return !!this.socket && this.socket.readyState === WebSocket.OPEN;
@@ -98,14 +98,14 @@ var ExtensionBridge = class {
       this.rejectAllPending(new Error("Previous connection was replaced by a new socket"));
     }
     this.socket = socket;
-    console.log(`[yetibrowser] Extension connected from ${request.socket.remoteAddress ?? "unknown"}`);
+    console.error(`[yetibrowser] Extension connected from ${request.socket.remoteAddress ?? "unknown"}`);
     socket.on("message", (data) => this.handleMessage(data));
     socket.on("error", (error) => {
       console.error("Extension socket error", error);
       this.rejectAllPending(new Error("Extension socket error"));
     });
     socket.on("close", () => {
-      console.log("[yetibrowser] Extension disconnected");
+      console.error("[yetibrowser] Extension disconnected");
       this.socket = void 0;
       this.rejectAllPending(new Error("Extension disconnected"));
     });
@@ -120,13 +120,13 @@ var ExtensionBridge = class {
     }
     if (message.type === "hello") {
       this.hello = { client: message.client, version: message.version };
-      console.log(
+      console.error(
         `[yetibrowser] Extension hello from ${message.client}${message.version ? ` v${message.version}` : ""}`
       );
       return;
     }
     if (message.type === "event") {
-      console.log("[yetibrowser] extension event", message.event, message.payload);
+      console.error("[yetibrowser] extension event", message.event, message.payload);
       return;
     }
     if (message.type === "result") {
@@ -170,23 +170,38 @@ var ExtensionContext = class {
   constructor(bridge) {
     this.bridge = bridge;
   }
+  snapshotHistory = [];
   async call(command, payload = void 0) {
     const finalPayload = payload ?? {};
     return await this.bridge.send(command, finalPayload);
   }
   async captureSnapshot(statusMessage = "") {
-    const [{ url }, { title }, { snapshot }] = await Promise.all([
+    const [{ url }, { title }, snapshotResult] = await Promise.all([
       this.call("getUrl"),
       this.call("getTitle"),
       this.call("snapshot")
     ]);
-    const statusPrefix = statusMessage ? `${statusMessage}
+    const record = {
+      capturedAt: snapshotResult.raw.capturedAt,
+      message: statusMessage,
+      snapshot: snapshotResult.raw,
+      formatted: snapshotResult.formatted,
+      url,
+      title
+    };
+    this.snapshotHistory.push(record);
+    if (this.snapshotHistory.length > 20) {
+      this.snapshotHistory.shift();
+    }
+    const index = this.snapshotHistory.length;
+    const statusLines = [statusMessage, `Snapshot #${index} captured at ${record.capturedAt}`].filter(Boolean).join("\n");
+    const prefix = statusLines ? `${statusLines}
 ` : "";
-    const text = `${statusPrefix}- Page URL: ${url}
+    const text = `${prefix}- Page URL: ${url}
 - Page Title: ${title}
 - Page Snapshot
 \`\`\`yaml
-${snapshot}
+${snapshotResult.formatted}
 \`\`\`
 `;
     return {
@@ -198,7 +213,113 @@ ${snapshot}
       ]
     };
   }
+  async diffLatestSnapshots() {
+    if (this.snapshotHistory.length < 2) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "At least two snapshots are required to compute a diff. Capture another snapshot first."
+          }
+        ],
+        isError: true
+      };
+    }
+    const current = this.snapshotHistory.at(-1);
+    const previous = this.snapshotHistory.at(-2);
+    const diff = diffSnapshots(previous.snapshot, current.snapshot);
+    const summaryLines = [];
+    summaryLines.push(
+      `Diffing snapshot captured ${current.capturedAt} (Snapshot #${this.snapshotHistory.length}) against ${previous.capturedAt}`
+    );
+    summaryLines.push(`Current URL: ${current.url}`);
+    if (current.url !== previous.url) {
+      summaryLines.push(`Previous URL: ${previous.url}`);
+    }
+    summaryLines.push("Summary:");
+    summaryLines.push(`- Added elements: ${diff.added.length}`);
+    summaryLines.push(`- Removed elements: ${diff.removed.length}`);
+    summaryLines.push(`- Changed elements: ${diff.changed.length}`);
+    const formatEntry = (entry) => `selector: ${entry.selector}
+      role: ${entry.role}
+      name: ${entry.name}`;
+    if (diff.added.length) {
+      summaryLines.push("Added:");
+      for (const entry of diff.added.slice(0, 5)) {
+        summaryLines.push(`  - ${entry.selector} (${entry.role}) \u2192 "${entry.name}"`);
+      }
+      if (diff.added.length > 5) {
+        summaryLines.push(`  - \u2026 ${diff.added.length - 5} more`);
+      }
+    }
+    if (diff.removed.length) {
+      summaryLines.push("Removed:");
+      for (const entry of diff.removed.slice(0, 5)) {
+        summaryLines.push(`  - ${entry.selector} (${entry.role}) \u2192 "${entry.name}"`);
+      }
+      if (diff.removed.length > 5) {
+        summaryLines.push(`  - \u2026 ${diff.removed.length - 5} more`);
+      }
+    }
+    if (diff.changed.length) {
+      summaryLines.push("Changed:");
+      for (const change of diff.changed.slice(0, 5)) {
+        summaryLines.push(
+          `  - ${change.selector}
+    before: role=${change.before.role}, name="${change.before.name}"
+    after:  role=${change.after.role}, name="${change.after.name}"`
+        );
+      }
+      if (diff.changed.length > 5) {
+        summaryLines.push(`  - \u2026 ${diff.changed.length - 5} more`);
+      }
+    }
+    if (!diff.added.length && !diff.removed.length && !diff.changed.length) {
+      summaryLines.push("No element-level differences detected.");
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: summaryLines.join("\n")
+        }
+      ]
+    };
+  }
 };
+function diffSnapshots(previous, current) {
+  const prevMap = /* @__PURE__ */ new Map();
+  const currentMap = /* @__PURE__ */ new Map();
+  for (const entry of previous.entries) {
+    if (!prevMap.has(entry.selector)) {
+      prevMap.set(entry.selector, entry);
+    }
+  }
+  for (const entry of current.entries) {
+    if (!currentMap.has(entry.selector)) {
+      currentMap.set(entry.selector, entry);
+    }
+  }
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const [selector, entry] of currentMap.entries()) {
+    const previousEntry = prevMap.get(selector);
+    if (!previousEntry) {
+      added.push(entry);
+      continue;
+    }
+    if (previousEntry.role !== entry.role || previousEntry.name !== entry.name) {
+      changed.push({ selector, before: previousEntry, after: entry });
+    }
+  }
+  for (const [selector, entry] of prevMap.entries()) {
+    if (!currentMap.has(selector)) {
+      removed.push(entry);
+    }
+  }
+  return { added, removed, changed };
+}
 
 // src/tools.ts
 import zodToJsonSchema from "zod-to-json-schema";
@@ -264,6 +385,16 @@ function createTools() {
     },
     handle: async (context) => {
       return context.captureSnapshot();
+    }
+  };
+  const snapshotDiffTool = {
+    schema: {
+      name: "browser_snapshot_diff",
+      description: "Compare the most recent snapshot with the previous one to highlight DOM changes",
+      inputSchema: noInputSchema()
+    },
+    handle: async (context) => {
+      return context.diffLatestSnapshots();
     }
   };
   const waitTool = {
@@ -390,8 +521,12 @@ function createTools() {
       const logs = await context.call("getConsoleLogs", {});
       const text = logs.map((log) => {
         const time = new Date(log.timestamp).toISOString();
-        return `[${time}] [${log.level}] ${log.message}`;
-      }).join("\n");
+        const lines = [`[${time}] [${log.level}] ${log.message}`];
+        if (log.stack) {
+          lines.push(log.stack);
+        }
+        return lines.join("\n");
+      }).join("\n\n");
       return {
         content: [
           {
@@ -402,8 +537,38 @@ function createTools() {
       };
     }
   };
+  const pageStateTool = {
+    schema: {
+      name: "browser_page_state",
+      description: "Extract form data, storage values, and cookies from the active page",
+      inputSchema: noInputSchema()
+    },
+    handle: async (context) => {
+      const state = await context.call("pageState", {});
+      const summary = [
+        `Page state captured ${state.capturedAt}`,
+        `- Forms inspected: ${state.forms.length}`,
+        `- localStorage keys: ${state.localStorage.length}`,
+        `- sessionStorage keys: ${state.sessionStorage.length}`,
+        `- Cookies: ${state.cookies.length}`,
+        "",
+        "```json",
+        JSON.stringify(state, null, 2),
+        "```"
+      ].join("\n");
+      return {
+        content: [
+          {
+            type: "text",
+            text: summary
+          }
+        ]
+      };
+    }
+  };
   return [
     snapshotTool,
+    snapshotDiffTool,
     buildSnapshotTool("browser_navigate", "Navigate to a URL", "navigate"),
     buildSnapshotTool("browser_go_back", "Go back to the previous page", "goBack"),
     buildSnapshotTool("browser_go_forward", "Go forward to the next page", "goForward"),
@@ -414,7 +579,8 @@ function createTools() {
     typeTool,
     selectOptionTool,
     screenshotTool,
-    consoleLogsTool
+    consoleLogsTool,
+    pageStateTool
   ];
 }
 
@@ -502,7 +668,7 @@ program.name("yetibrowser-mcp").version(packageJson.version).description("YetiBr
   const transport = new StdioServerTransport();
   await server.connect(transport);
   const shutdown = async () => {
-    console.log("[yetibrowser] shutting down");
+    console.error("[yetibrowser] shutting down");
     await Promise.allSettled([server.close(), bridge.close()]);
     process.exit(0);
   };

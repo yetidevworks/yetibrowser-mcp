@@ -43,7 +43,7 @@ program
     await server.connect(transport);
 
     const shutdown = async () => {
-      console.log("[yetibrowser] shutting down");
+      console.error("[yetibrowser] shutting down");
       await Promise.allSettled([server.close(), bridge.close()]);
       process.exit(0);
     };

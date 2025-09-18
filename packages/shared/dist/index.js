@@ -1,6 +1,7 @@
 // src/index.ts
 var TOOL_NAMES = {
   SNAPSHOT: "browser_snapshot",
+  SNAPSHOT_DIFF: "browser_snapshot_diff",
   NAVIGATE: "browser_navigate",
   GO_BACK: "browser_go_back",
   GO_FORWARD: "browser_go_forward",
@@ -11,7 +12,8 @@ var TOOL_NAMES = {
   TYPE: "browser_type",
   SELECT_OPTION: "browser_select_option",
   SCREENSHOT: "browser_screenshot",
-  CONSOLE_LOGS: "browser_get_console_logs"
+  CONSOLE_LOGS: "browser_get_console_logs",
+  PAGE_STATE: "browser_page_state"
 };
 export {
   TOOL_NAMES

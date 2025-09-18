@@ -63,6 +63,7 @@ async function bootstrap() {
     wsPort = storedPort;
   }
   connectWebSocket();
+  void updateBadge();
 }
 function connectWebSocket() {
   if (socket && socket.readyState === WebSocket.OPEN) {
@@ -86,6 +87,7 @@ function connectWebSocket() {
     }
     sendHello();
     startKeepAlive();
+    void updateBadge();
   });
   socket.addEventListener("message", (event) => {
     handleSocketMessage(event.data).catch((error) => {
@@ -97,6 +99,7 @@ function connectWebSocket() {
     socket = null;
     stopKeepAlive();
     scheduleReconnect();
+    void updateBadge();
   });
   socket.addEventListener("error", (error) => {
     console.error("[yetibrowser] MCP socket error", error);
@@ -205,7 +208,7 @@ async function dispatchCommand(command, payload) {
       return { title: (await ensureTab()).title ?? "" };
     case "snapshot": {
       const snapshot = await captureSnapshot();
-      return { snapshot };
+      return snapshot;
     }
     case "navigate": {
       const { url } = payload;
@@ -257,6 +260,10 @@ async function dispatchCommand(command, payload) {
       const logs = await readConsoleLogs();
       return logs;
     }
+    case "pageState": {
+      const state = await capturePageState();
+      return state;
+    }
     default:
       throw new Error(`Unsupported command ${command}`);
   }
@@ -277,10 +284,12 @@ async function setConnectedTab(tabId) {
   await chrome.storage.local.set({ [STORAGE_KEYS.connectedTabId]: tabId });
   connectedTabId = tabId;
   await initializeTab(tabId);
+  void updateBadge();
 }
 async function clearConnectedTab() {
   await chrome.storage.local.remove(STORAGE_KEYS.connectedTabId);
   connectedTabId = null;
+  void updateBadge();
 }
 async function navigateTo(url) {
   const tab = await ensureTab();
@@ -330,13 +339,140 @@ async function captureSnapshot() {
     func: collectSnapshot
   });
   const scriptResult = results[0]?.result;
-  if (!scriptResult) {
-    return "{}";
+  if (!scriptResult || typeof scriptResult === "string") {
+    const fallback = {
+      title: tab.title ?? "",
+      url: tab.url ?? "about:blank",
+      capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      entries: []
+    };
+    return {
+      formatted: typeof scriptResult === "string" ? scriptResult : formatSnapshot(fallback),
+      raw: fallback
+    };
   }
-  if (typeof scriptResult === "string") {
-    return scriptResult;
+  const snapshot = scriptResult.snapshot;
+  if (!snapshot.capturedAt) {
+    snapshot.capturedAt = (/* @__PURE__ */ new Date()).toISOString();
   }
-  return formatSnapshot(scriptResult.snapshot);
+  return {
+    formatted: formatSnapshot(snapshot),
+    raw: snapshot
+  };
+}
+async function capturePageState() {
+  const fallback = {
+    forms: [],
+    localStorage: [],
+    sessionStorage: [],
+    cookies: [],
+    capturedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const response = await runInPage(() => {
+    const computeSelector = (element) => {
+      if (element.id) {
+        return `#${element.id}`;
+      }
+      const parts = [];
+      let current = element;
+      while (current && parts.length < 5) {
+        const tag = current.tagName.toLowerCase();
+        const classes = (current.className || "").toString().split(/\s+/).filter(Boolean).slice(0, 2).map((cls) => cls.replace(/[^a-zA-Z0-9_-]/g, "")).filter(Boolean);
+        let part = tag;
+        if (classes.length) {
+          part += `.${classes.join(".")}`;
+        }
+        const parent = current.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((child) => child.tagName === current.tagName);
+          if (siblings.length > 1) {
+            const index = siblings.indexOf(current) + 1;
+            part += `:nth-of-type(${index})`;
+          }
+        }
+        parts.push(part);
+        current = current.parentElement;
+      }
+      return parts.reverse().join(" > ");
+    };
+    const readStorage = (storage) => {
+      const entries = [];
+      const limit = Math.min(storage.length, 100);
+      for (let index = 0; index < limit; index += 1) {
+        const key = storage.key(index);
+        if (!key) {
+          continue;
+        }
+        try {
+          const value = storage.getItem(key) ?? "";
+          entries.push({ key, value });
+        } catch (error) {
+          entries.push({ key, value: "<unavailable>" });
+        }
+      }
+      return entries;
+    };
+    const readCookies = () => {
+      const raw = document.cookie;
+      if (!raw) {
+        return [];
+      }
+      return raw.split(";").slice(0, 50).map((part) => {
+        const [name, ...rest] = part.split("=");
+        return { key: name.trim(), value: rest.join("=").trim() };
+      });
+    };
+    const forms = Array.from(document.querySelectorAll("form")).slice(0, 25).map((form) => {
+      const fields = [];
+      const elements = Array.from(form.elements ?? []).slice(0, 50);
+      for (const element of elements) {
+        if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement)) {
+          continue;
+        }
+        const selector = computeSelector(element);
+        const base = {
+          selector,
+          name: element.getAttribute("name") ?? void 0
+        };
+        if (element instanceof HTMLInputElement) {
+          base.type = element.type;
+          if (element.type === "password") {
+            base.value = "[redacted]";
+          } else if (element.type === "file") {
+            base.value = element.files?.length ? `${element.files.length} file(s)` : "";
+          } else {
+            base.value = element.value;
+          }
+          base.label = element.labels?.[0]?.innerText.trim() || element.placeholder || void 0;
+        } else if (element instanceof HTMLTextAreaElement) {
+          base.type = "textarea";
+          base.value = element.value;
+          base.label = element.labels?.[0]?.innerText.trim() || element.placeholder || void 0;
+        } else if (element instanceof HTMLSelectElement) {
+          base.type = "select";
+          base.value = Array.from(element.selectedOptions).map((option) => option.value || option.label).join(", ");
+          base.label = element.labels?.[0]?.innerText.trim() || void 0;
+        }
+        fields.push(base);
+      }
+      return {
+        selector: computeSelector(form),
+        name: form.getAttribute("name") ?? void 0,
+        method: form.getAttribute("method")?.toUpperCase() ?? void 0,
+        action: form.getAttribute("action") ?? void 0,
+        fields
+      };
+    });
+    const snapshot = {
+      forms,
+      localStorage: readStorage(window.localStorage),
+      sessionStorage: readStorage(window.sessionStorage),
+      cookies: readCookies(),
+      capturedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return { ok: true, value: snapshot };
+  }, []);
+  return response ?? fallback;
 }
 function collectSnapshot() {
   function computeSelector(element) {
@@ -390,6 +526,7 @@ function collectSnapshot() {
     snapshot: {
       title: document.title,
       url: location.href,
+      capturedAt: (/* @__PURE__ */ new Date()).toISOString(),
       entries
     }
   };
@@ -398,6 +535,7 @@ function formatSnapshot(snapshot) {
   const lines = [];
   lines.push(`title: ${snapshot.title}`);
   lines.push(`url: ${snapshot.url}`);
+  lines.push(`capturedAt: ${snapshot.capturedAt}`);
   lines.push("elements:");
   for (const entry of snapshot.entries) {
     lines.push(`  - selector: "${entry.selector.replace(/"/g, '\\"')}"`);
@@ -538,16 +676,121 @@ async function selectOptions(selector, values, description) {
 }
 async function takeScreenshot(fullPage) {
   const tab = await ensureTab();
-  const windowId = tab.windowId;
+  let base64;
+  try {
+    base64 = await captureScreenshotWithDebugger(tab.id, fullPage);
+  } catch (error) {
+    console.warn("[yetibrowser] debugger capture failed, falling back", error);
+  }
+  if (!base64) {
+    base64 = await captureVisibleTabFallback(tab.windowId);
+  }
+  return await encodeScreenshot(base64);
+}
+var DEBUGGER_PROTOCOL_VERSION = "1.3";
+async function captureScreenshotWithDebugger(tabId, fullPage) {
+  const target = { tabId };
+  await attachDebugger(target);
+  let metricsOverridden = false;
+  try {
+    await sendDebuggerCommand(target, "Page.enable");
+    if (fullPage) {
+      try {
+        const metrics = await sendDebuggerCommand(
+          target,
+          "Page.getLayoutMetrics"
+        );
+        const width = Math.ceil(metrics.contentSize?.width ?? 0);
+        const height = Math.ceil(metrics.contentSize?.height ?? 0);
+        if (width > 0 && height > 0) {
+          await sendDebuggerCommand(target, "Emulation.setDeviceMetricsOverride", {
+            mobile: false,
+            deviceScaleFactor: 1,
+            width,
+            height,
+            screenWidth: width,
+            screenHeight: height,
+            viewport: {
+              x: 0,
+              y: 0,
+              width,
+              height,
+              scale: 1
+            }
+          });
+          metricsOverridden = true;
+        }
+      } catch (error) {
+        console.warn("[yetibrowser] layout metrics unavailable, skipping full-page override", error);
+      }
+    }
+    const screenshot = await sendDebuggerCommand(target, "Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: fullPage
+    });
+    if (metricsOverridden) {
+      await sendDebuggerCommand(target, "Emulation.clearDeviceMetricsOverride");
+    }
+    return screenshot.data;
+  } finally {
+    await detachDebugger(target);
+  }
+}
+async function captureVisibleTabFallback(windowId) {
   if (windowId === void 0) {
     throw new Error("Unable to determine window for active tab");
   }
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-  if (!dataUrl) {
-    throw new Error("Failed to capture screenshot");
+  const dataUrl = await new Promise((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      if (!result) {
+        reject(new Error("Failed to capture screenshot"));
+        return;
+      }
+      resolve(result);
+    });
+  });
+  const [, base64] = dataUrl.split(",");
+  if (!base64) {
+    throw new Error("Unexpected screenshot data format");
   }
-  const pngBlob = await fetch(dataUrl).then((response) => response.blob());
-  const bitmap = await createImageBitmap(pngBlob);
+  return base64;
+}
+async function attachDebugger(target) {
+  await new Promise((resolve, reject) => {
+    chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        if (error.message?.includes("Another debugger is already attached")) {
+          resolve();
+          return;
+        }
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+async function detachDebugger(target) {
+  await new Promise((resolve) => {
+    chrome.debugger.detach(target, () => {
+      const error = chrome.runtime.lastError;
+      if (error && !error.message?.includes("No debugger is connected")) {
+        console.warn("[yetibrowser] failed to detach debugger", error);
+      }
+      resolve();
+    });
+  });
+}
+async function encodeScreenshot(base64Png) {
+  const bytes = Uint8Array.from(atob(base64Png), (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "image/png" });
+  const bitmap = await createImageBitmap(blob);
   const maxWidth = 1280;
   const scale = bitmap.width > maxWidth ? maxWidth / bitmap.width : 1;
   const targetWidth = Math.round(bitmap.width * scale);
@@ -564,18 +807,32 @@ async function takeScreenshot(fullPage) {
     outputBlob = await canvas.convertToBlob({ type: "image/webp", quality: 0.85 });
   } catch (error) {
     console.warn("[yetibrowser] webp conversion failed, falling back to jpeg", error);
-    outputBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+    outputBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     mimeType = "image/jpeg";
   }
   const arrayBuffer = await outputBlob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
+  const outputBytes = new Uint8Array(arrayBuffer);
   let binary = "";
-  bytes.forEach((byte) => {
+  outputBytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
   });
   return { data: btoa(binary), mimeType };
 }
+async function sendDebuggerCommand(target, method, params) {
+  return await new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand(target, method, params, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve(result ?? {});
+    });
+  });
+}
 async function readConsoleLogs() {
+  const tab = await ensureTab();
+  await ensurePageHelpers(tab.id);
   const logs = await runInPage(() => {
     const win = window;
     const entries = Array.isArray(win.__yetibrowser?.logs) ? win.__yetibrowser.logs : [];
@@ -585,13 +842,19 @@ async function readConsoleLogs() {
 }
 async function initializeTab(tabId) {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const win = window;
-        if (win.__yetibrowser?.initialized) {
-          return;
-        }
+    await ensurePageHelpers(tabId);
+  } catch (error) {
+    console.warn("[yetibrowser] failed to initialize tab helpers", error);
+  }
+  void updateBadge();
+}
+async function ensurePageHelpers(tabId) {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      const win = window;
+      const install = () => {
         const maxEntries = 500;
         const state = win.__yetibrowser ?? { logs: [] };
         const logs = Array.isArray(state.logs) ? state.logs : [];
@@ -605,32 +868,113 @@ async function initializeTab(tabId) {
           if (typeof value === "string") {
             return value;
           }
+          if (value instanceof Error) {
+            return value.message;
+          }
           try {
-            return JSON.stringify(value);
+            const serialized = JSON.stringify(value);
+            return serialized ?? String(value);
           } catch (error) {
             return String(value);
           }
         };
-        const wrap = (level) => (...args) => {
-          const message = args.map((arg) => serialize(arg)).join(" ");
-          logs.push({ level, message, timestamp: Date.now() });
+        const extractStack = (values) => {
+          for (const value of values) {
+            if (value instanceof Error && value.stack) {
+              return value.stack;
+            }
+            if (typeof value === "string" && value.includes("\n    at ")) {
+              return value;
+            }
+          }
+          return void 0;
+        };
+        const pushEntry = (level, args, explicitStack) => {
+          const message = args.map((arg) => serialize(arg)).filter((part) => part.length > 0).join(" ") || level;
+          const stack = explicitStack ?? extractStack(args);
+          logs.push({ level, message, timestamp: Date.now(), stack });
           if (logs.length > maxEntries) {
             logs.shift();
           }
+        };
+        const wrap = (level) => (...args) => {
+          pushEntry(level, args);
           originals[level](...args);
         };
         console.log = wrap("log");
         console.info = wrap("info");
         console.warn = wrap("warn");
         console.error = wrap("error");
+        window.addEventListener("error", (event) => {
+          const details = [event.message];
+          if (event.filename) {
+            const locationParts = [event.filename];
+            if (typeof event.lineno === "number") {
+              locationParts.push(String(event.lineno));
+            }
+            if (typeof event.colno === "number") {
+              locationParts.push(String(event.colno));
+            }
+            details.push(locationParts.join(":"));
+          }
+          const stack = event.error instanceof Error ? event.error.stack ?? void 0 : void 0;
+          pushEntry("error", details, stack);
+          originals.error(event.message, event.error ?? event);
+        });
+        window.addEventListener("unhandledrejection", (event) => {
+          const reason = event.reason;
+          let message;
+          let stack;
+          if (reason instanceof Error) {
+            message = reason.message;
+            stack = reason.stack ?? void 0;
+          } else {
+            message = serialize(reason);
+          }
+          pushEntry("error", ["Unhandled promise rejection", message], stack);
+          originals.error("Unhandled promise rejection", reason);
+        });
+        logs.push({ level: "debug", message: "[yetibrowser] console hooks installed", timestamp: Date.now() });
         win.__yetibrowser = {
           initialized: true,
           logs
         };
+      };
+      if (!win.__yetibrowser?.initialized) {
+        install();
+        return;
       }
-    });
+      if (!Array.isArray(win.__yetibrowser.logs)) {
+        install();
+      }
+    }
+  });
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url?.startsWith("chrome://") || tab.url?.startsWith("edge://") || tab.url?.startsWith("about:")) {
+    console.warn("[yetibrowser] unable to inject helpers into special page", tab.url);
+  }
+}
+async function updateBadge() {
+  const isConnected = connectedTabId !== null && socket?.readyState === WebSocket.OPEN;
+  try {
+    const text = isConnected ? "\u25CF" : "";
+    await chrome.action.setBadgeText({ text });
+    if (isConnected) {
+      try {
+        await chrome.action.setBadgeBackgroundColor({ color: "#111827" });
+      } catch (error) {
+        console.warn("[yetibrowser] failed to set badge background", error);
+      }
+      if (chrome.action.setBadgeTextColor) {
+        try {
+          await chrome.action.setBadgeTextColor({ color: "#facc15" });
+        } catch (error) {
+          console.warn("[yetibrowser] failed to set badge text color", error);
+        }
+      }
+    }
   } catch (error) {
-    console.warn("[yetibrowser] failed to initialize tab helpers", error);
+    console.warn("[yetibrowser] failed to set badge", error);
   }
 }
 //# sourceMappingURL=background.js.map

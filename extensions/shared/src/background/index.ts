@@ -6,6 +6,10 @@ import type {
   CommandPayload,
   CommandPayloadMap,
   CommandResult,
+  ConsoleLogEntry,
+  DomSnapshot,
+  DomSnapshotEntry,
+  PageStateSnapshot,
 } from "@yetidevworks/shared";
 
 const STORAGE_KEYS = {
@@ -91,6 +95,7 @@ async function bootstrap(): Promise<void> {
   }
 
   connectWebSocket();
+  void updateBadge();
 }
 
 function connectWebSocket(): void {
@@ -118,6 +123,7 @@ function connectWebSocket(): void {
     }
     sendHello();
     startKeepAlive();
+    void updateBadge();
   });
 
   socket.addEventListener("message", (event) => {
@@ -131,6 +137,7 @@ function connectWebSocket(): void {
     socket = null;
     stopKeepAlive();
     scheduleReconnect();
+    void updateBadge();
   });
 
   socket.addEventListener("error", (error) => {
@@ -256,7 +263,7 @@ async function dispatchCommand<K extends CommandName>(
       return { title: (await ensureTab()).title ?? "" } as CommandResult<K>;
     case "snapshot": {
       const snapshot = await captureSnapshot();
-      return { snapshot } as CommandResult<K>;
+      return snapshot as CommandResult<K>;
     }
     case "navigate": {
       const { url } = payload as CommandPayloadMap["navigate"];
@@ -308,6 +315,10 @@ async function dispatchCommand<K extends CommandName>(
       const logs = await readConsoleLogs();
       return logs as CommandResult<K>;
     }
+    case "pageState": {
+      const state = await capturePageState();
+      return state as CommandResult<K>;
+    }
     default:
       throw new Error(`Unsupported command ${command satisfies never}`);
   }
@@ -331,11 +342,13 @@ async function setConnectedTab(tabId: number): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEYS.connectedTabId]: tabId });
   connectedTabId = tabId;
   await initializeTab(tabId);
+  void updateBadge();
 }
 
 async function clearConnectedTab(): Promise<void> {
   await chrome.storage.local.remove(STORAGE_KEYS.connectedTabId);
   connectedTabId = null;
+  void updateBadge();
 }
 
 async function navigateTo(url: string): Promise<void> {
@@ -384,37 +397,184 @@ async function waitForTabComplete(tabId: number): Promise<void> {
   });
 }
 
-async function captureSnapshot(): Promise<string> {
+async function captureSnapshot(): Promise<{ formatted: string; raw: DomSnapshot }> {
   const tab = await ensureTab();
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id! },
     func: collectSnapshot,
   });
 
-  const scriptResult = results[0]?.result as { snapshot: SnapshotResult } | string | undefined;
-  if (!scriptResult) {
-    return "{}";
-  }
-  if (typeof scriptResult === "string") {
-    return scriptResult;
+  const scriptResult = results[0]?.result as { snapshot: DomSnapshot } | string | undefined;
+  if (!scriptResult || typeof scriptResult === "string") {
+    const fallback: DomSnapshot = {
+      title: tab.title ?? "",
+      url: tab.url ?? "about:blank",
+      capturedAt: new Date().toISOString(),
+      entries: [],
+    };
+    return {
+      formatted: typeof scriptResult === "string" ? scriptResult : formatSnapshot(fallback),
+      raw: fallback,
+    };
   }
 
-  return formatSnapshot(scriptResult.snapshot);
+  const snapshot = scriptResult.snapshot;
+  if (!snapshot.capturedAt) {
+    snapshot.capturedAt = new Date().toISOString();
+  }
+  return {
+    formatted: formatSnapshot(snapshot),
+    raw: snapshot,
+  };
 }
 
-type SnapshotEntry = {
-  selector: string;
-  role: string;
-  name: string;
-};
+async function capturePageState(): Promise<PageStateSnapshot> {
+  const fallback: PageStateSnapshot = {
+    forms: [],
+    localStorage: [],
+    sessionStorage: [],
+    cookies: [],
+    capturedAt: new Date().toISOString(),
+  };
 
-type SnapshotResult = {
-  title: string;
-  url: string;
-  entries: SnapshotEntry[];
-};
+  const response = await runInPage(() => {
+    const computeSelector = (element: Element): string => {
+      if (element.id) {
+        return `#${element.id}`;
+      }
 
-function collectSnapshot(): { snapshot: SnapshotResult } {
+      const parts: string[] = [];
+      let current: Element | null = element;
+
+      while (current && parts.length < 5) {
+        const tag = current.tagName.toLowerCase();
+        const classes = (current.className || "")
+          .toString()
+          .split(/\s+/)
+          .filter(Boolean)
+          .slice(0, 2)
+          .map((cls) => cls.replace(/[^a-zA-Z0-9_-]/g, ""))
+          .filter(Boolean);
+        let part = tag;
+        if (classes.length) {
+          part += `.${classes.join(".")}`;
+        }
+        const parent = current.parentElement;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter((child) => child.tagName === current!.tagName);
+          if (siblings.length > 1) {
+            const index = siblings.indexOf(current) + 1;
+            part += `:nth-of-type(${index})`;
+          }
+        }
+        parts.push(part);
+        current = current.parentElement;
+      }
+
+      return parts.reverse().join(" > ");
+    };
+
+    const readStorage = (storage: Storage) => {
+      const entries: Array<{ key: string; value: string }> = [];
+      const limit = Math.min(storage.length, 100);
+      for (let index = 0; index < limit; index += 1) {
+        const key = storage.key(index);
+        if (!key) {
+          continue;
+        }
+        try {
+          const value = storage.getItem(key) ?? "";
+          entries.push({ key, value });
+        } catch (error) {
+          entries.push({ key, value: "<unavailable>" });
+        }
+      }
+      return entries;
+    };
+
+    const readCookies = () => {
+      const raw = document.cookie;
+      if (!raw) {
+        return [] as Array<{ key: string; value: string }>;
+      }
+      return raw.split(";").slice(0, 50).map((part) => {
+        const [name, ...rest] = part.split("=");
+        return { key: name.trim(), value: rest.join("=").trim() };
+      });
+    };
+
+    const forms = Array.from(document.querySelectorAll("form"))
+      .slice(0, 25)
+      .map((form) => {
+        const fields: Array<{ selector: string; name?: string; type?: string; value?: string; label?: string }> = [];
+        const elements = Array.from(form.elements ?? []).slice(0, 50);
+
+        for (const element of elements) {
+          if (
+            !(
+              element instanceof HTMLInputElement ||
+              element instanceof HTMLTextAreaElement ||
+              element instanceof HTMLSelectElement
+            )
+          ) {
+            continue;
+          }
+
+          const selector = computeSelector(element);
+          const base: { selector: string; name?: string; type?: string; value?: string; label?: string } = {
+            selector,
+            name: element.getAttribute("name") ?? undefined,
+          };
+
+          if (element instanceof HTMLInputElement) {
+            base.type = element.type;
+            if (element.type === "password") {
+              base.value = "[redacted]";
+            } else if (element.type === "file") {
+              base.value = element.files?.length ? `${element.files.length} file(s)` : "";
+            } else {
+              base.value = element.value;
+            }
+            base.label = element.labels?.[0]?.innerText.trim() || element.placeholder || undefined;
+          } else if (element instanceof HTMLTextAreaElement) {
+            base.type = "textarea";
+            base.value = element.value;
+            base.label = element.labels?.[0]?.innerText.trim() || element.placeholder || undefined;
+          } else if (element instanceof HTMLSelectElement) {
+            base.type = "select";
+            base.value = Array.from(element.selectedOptions)
+              .map((option) => option.value || option.label)
+              .join(", ");
+            base.label = element.labels?.[0]?.innerText.trim() || undefined;
+          }
+
+          fields.push(base);
+        }
+
+        return {
+          selector: computeSelector(form),
+          name: form.getAttribute("name") ?? undefined,
+          method: form.getAttribute("method")?.toUpperCase() ?? undefined,
+          action: form.getAttribute("action") ?? undefined,
+          fields,
+        };
+      });
+
+    const snapshot: PageStateSnapshot = {
+      forms,
+      localStorage: readStorage(window.localStorage),
+      sessionStorage: readStorage(window.sessionStorage),
+      cookies: readCookies(),
+      capturedAt: new Date().toISOString(),
+    };
+
+    return { ok: true, value: snapshot } as const;
+  }, []);
+
+  return response ?? fallback;
+}
+
+function collectSnapshot(): { snapshot: DomSnapshot } {
   function computeSelector(element: Element): string {
     if (element.id) {
       return `#${element.id}`;
@@ -472,7 +632,7 @@ function collectSnapshot(): { snapshot: SnapshotResult } {
     document.querySelectorAll("a, button, input, textarea, select, [role='button'], [role='link']"),
   ) as Element[];
 
-  const entries: SnapshotEntry[] = targets.slice(0, 100).map((element) => ({
+  const entries: DomSnapshotEntry[] = targets.slice(0, 100).map((element) => ({
     selector: computeSelector(element),
     role: element.getAttribute("role") ?? element.tagName.toLowerCase(),
     name: makeName(element),
@@ -482,15 +642,17 @@ function collectSnapshot(): { snapshot: SnapshotResult } {
     snapshot: {
       title: document.title,
       url: location.href,
+      capturedAt: new Date().toISOString(),
       entries,
     },
   };
 }
 
-function formatSnapshot(snapshot: SnapshotResult): string {
+function formatSnapshot(snapshot: DomSnapshot): string {
   const lines: string[] = [];
   lines.push(`title: ${snapshot.title}`);
   lines.push(`url: ${snapshot.url}`);
+  lines.push(`capturedAt: ${snapshot.capturedAt}`);
   lines.push("elements:");
   for (const entry of snapshot.entries) {
     lines.push(`  - selector: "${entry.selector.replace(/"/g, '\\"')}"`);
@@ -505,8 +667,6 @@ function delay(ms: number): Promise<void> {
 }
 
 type ScriptResponse<R> = { ok: true; value?: R } | { error: string };
-type ConsoleLogEntry = { level: string; message: string; timestamp: number };
-
 async function runInPage<A extends unknown[], R>(
   func: (...args: A) => ScriptResponse<R>,
   args: A,
@@ -659,18 +819,137 @@ async function selectOptions(selector: string, values: string[], description?: s
 
 async function takeScreenshot(fullPage: boolean): Promise<{ data: string; mimeType: string }> {
   const tab = await ensureTab();
-  const windowId = tab.windowId;
+  let base64: string | undefined;
+
+  try {
+    base64 = await captureScreenshotWithDebugger(tab.id!, fullPage);
+  } catch (error) {
+    console.warn("[yetibrowser] debugger capture failed, falling back", error);
+  }
+
+  if (!base64) {
+    base64 = await captureVisibleTabFallback(tab.windowId!);
+  }
+
+  return await encodeScreenshot(base64);
+}
+
+const DEBUGGER_PROTOCOL_VERSION = "1.3";
+
+async function captureScreenshotWithDebugger(tabId: number, fullPage: boolean): Promise<string | undefined> {
+  const target: chrome.debugger.Debuggee = { tabId };
+  await attachDebugger(target);
+  let metricsOverridden = false;
+
+  try {
+    await sendDebuggerCommand(target, "Page.enable");
+
+    if (fullPage) {
+      try {
+        const metrics = await sendDebuggerCommand<{ contentSize?: { width?: number; height?: number } }>(
+          target,
+          "Page.getLayoutMetrics",
+        );
+        const width = Math.ceil(metrics.contentSize?.width ?? 0);
+        const height = Math.ceil(metrics.contentSize?.height ?? 0);
+        if (width > 0 && height > 0) {
+          await sendDebuggerCommand(target, "Emulation.setDeviceMetricsOverride", {
+            mobile: false,
+            deviceScaleFactor: 1,
+            width,
+            height,
+            screenWidth: width,
+            screenHeight: height,
+            viewport: {
+              x: 0,
+              y: 0,
+              width,
+              height,
+              scale: 1,
+            },
+          });
+          metricsOverridden = true;
+        }
+      } catch (error) {
+        console.warn("[yetibrowser] layout metrics unavailable, skipping full-page override", error);
+      }
+    }
+
+    const screenshot = await sendDebuggerCommand<{ data: string }>(target, "Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: fullPage,
+    });
+
+    if (metricsOverridden) {
+      await sendDebuggerCommand(target, "Emulation.clearDeviceMetricsOverride");
+    }
+
+    return screenshot.data;
+  } finally {
+    await detachDebugger(target);
+  }
+}
+
+async function captureVisibleTabFallback(windowId: number): Promise<string> {
   if (windowId === undefined) {
     throw new Error("Unable to determine window for active tab");
   }
 
-  const dataUrl = await chrome.tabs.captureVisibleTab(windowId, { format: "png" });
-  if (!dataUrl) {
-    throw new Error("Failed to capture screenshot");
-  }
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    chrome.tabs.captureVisibleTab(windowId, { format: "png" }, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      if (!result) {
+        reject(new Error("Failed to capture screenshot"));
+        return;
+      }
+      resolve(result);
+    });
+  });
 
-  const pngBlob = await fetch(dataUrl).then((response) => response.blob());
-  const bitmap = await createImageBitmap(pngBlob);
+  const [, base64] = dataUrl.split(",");
+  if (!base64) {
+    throw new Error("Unexpected screenshot data format");
+  }
+  return base64;
+}
+
+async function attachDebugger(target: chrome.debugger.Debuggee): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        if (error.message?.includes("Another debugger is already attached")) {
+          resolve();
+          return;
+        }
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
+async function detachDebugger(target: chrome.debugger.Debuggee): Promise<void> {
+  await new Promise<void>((resolve) => {
+    chrome.debugger.detach(target, () => {
+      const error = chrome.runtime.lastError;
+      if (error && !error.message?.includes("No debugger is connected")) {
+        console.warn("[yetibrowser] failed to detach debugger", error);
+      }
+      resolve();
+    });
+  });
+}
+
+async function encodeScreenshot(base64Png: string): Promise<{ data: string; mimeType: string }> {
+  const bytes = Uint8Array.from(atob(base64Png), (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "image/png" });
+  const bitmap = await createImageBitmap(blob);
 
   const maxWidth = 1280;
   const scale = bitmap.width > maxWidth ? maxWidth / bitmap.width : 1;
@@ -690,45 +969,69 @@ async function takeScreenshot(fullPage: boolean): Promise<{ data: string; mimeTy
     outputBlob = await canvas.convertToBlob({ type: "image/webp", quality: 0.85 });
   } catch (error) {
     console.warn("[yetibrowser] webp conversion failed, falling back to jpeg", error);
-    outputBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.8 });
+    outputBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
     mimeType = "image/jpeg";
   }
 
   const arrayBuffer = await outputBlob.arrayBuffer();
-  const bytes = new Uint8Array(arrayBuffer);
+  const outputBytes = new Uint8Array(arrayBuffer);
   let binary = "";
-  bytes.forEach((byte) => {
+  outputBytes.forEach((byte) => {
     binary += String.fromCharCode(byte);
   });
   return { data: btoa(binary), mimeType };
 }
 
+async function sendDebuggerCommand<T>(
+  target: chrome.debugger.Debuggee,
+  method: string,
+  params?: Record<string, unknown>,
+): Promise<T> {
+  return await new Promise<T>((resolve, reject) => {
+    chrome.debugger.sendCommand(target, method, params, (result) => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve((result ?? {}) as T);
+    });
+  });
+}
+
 async function readConsoleLogs(): Promise<ConsoleLogEntry[]> {
+  const tab = await ensureTab();
+  await ensurePageHelpers(tab.id!);
   const logs = await runInPage(() => {
     const win = window as typeof window & { __yetibrowser?: { logs?: ConsoleLogEntry[] } };
     const entries = Array.isArray(win.__yetibrowser?.logs) ? win.__yetibrowser!.logs! : [];
     return { ok: true, value: entries.slice(-200) };
   }, []);
-
   return logs ?? [];
 }
 
 async function initializeTab(tabId: number): Promise<void> {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        const win = window as typeof window & {
-          __yetibrowser?: {
-            initialized?: boolean;
-            logs: ConsoleLogEntry[];
-          };
+    await ensurePageHelpers(tabId);
+  } catch (error) {
+    console.warn("[yetibrowser] failed to initialize tab helpers", error);
+  }
+  void updateBadge();
+}
+
+async function ensurePageHelpers(tabId: number): Promise<void> {
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: () => {
+      const win = window as typeof window & {
+        __yetibrowser?: {
+          initialized?: boolean;
+          logs: ConsoleLogEntry[];
         };
+      };
 
-        if (win.__yetibrowser?.initialized) {
-          return;
-        }
-
+      const install = () => {
         const maxEntries = 500;
         const state = win.__yetibrowser ?? { logs: [] as ConsoleLogEntry[] };
         const logs = Array.isArray(state.logs) ? state.logs : [];
@@ -744,20 +1047,48 @@ async function initializeTab(tabId: number): Promise<void> {
           if (typeof value === "string") {
             return value;
           }
+          if (value instanceof Error) {
+            return value.message;
+          }
           try {
-            return JSON.stringify(value);
+            const serialized = JSON.stringify(value);
+            return serialized ?? String(value);
           } catch (error) {
             return String(value);
           }
         };
 
+        const extractStack = (values: unknown[]): string | undefined => {
+          for (const value of values) {
+            if (value instanceof Error && value.stack) {
+              return value.stack;
+            }
+            if (typeof value === "string" && value.includes("\n    at ")) {
+              return value;
+            }
+          }
+          return undefined;
+        };
+
+        const pushEntry = (
+          level: keyof typeof originals,
+          args: unknown[],
+          explicitStack?: string,
+        ) => {
+          const message = args
+            .map((arg) => serialize(arg))
+            .filter((part) => part.length > 0)
+            .join(" ") || level;
+          const stack = explicitStack ?? extractStack(args);
+          logs.push({ level, message, timestamp: Date.now(), stack });
+          if (logs.length > maxEntries) {
+            logs.shift();
+          }
+        };
+
         const wrap = (level: keyof typeof originals) =>
           (...args: unknown[]) => {
-            const message = args.map((arg) => serialize(arg)).join(" ");
-            logs.push({ level, message, timestamp: Date.now() });
-            if (logs.length > maxEntries) {
-              logs.shift();
-            }
+            pushEntry(level, args);
             originals[level](...args);
           };
 
@@ -766,13 +1097,82 @@ async function initializeTab(tabId: number): Promise<void> {
         console.warn = wrap("warn") as typeof console.warn;
         console.error = wrap("error") as typeof console.error;
 
+        window.addEventListener("error", (event) => {
+          const details: unknown[] = [event.message];
+          if (event.filename) {
+            const locationParts = [event.filename];
+            if (typeof event.lineno === "number") {
+              locationParts.push(String(event.lineno));
+            }
+            if (typeof event.colno === "number") {
+              locationParts.push(String(event.colno));
+            }
+            details.push(locationParts.join(":"));
+          }
+          const stack = event.error instanceof Error ? event.error.stack ?? undefined : undefined;
+          pushEntry("error", details, stack);
+          originals.error(event.message, event.error ?? event);
+        });
+
+        window.addEventListener("unhandledrejection", (event) => {
+          const reason = event.reason;
+          let message: string;
+          let stack: string | undefined;
+          if (reason instanceof Error) {
+            message = reason.message;
+            stack = reason.stack ?? undefined;
+          } else {
+            message = serialize(reason);
+          }
+          pushEntry("error", ["Unhandled promise rejection", message], stack);
+          originals.error("Unhandled promise rejection", reason);
+        });
+
+        logs.push({ level: "debug", message: "[yetibrowser] console hooks installed", timestamp: Date.now() });
+
         win.__yetibrowser = {
           initialized: true,
           logs,
         };
-      },
-    });
+      };
+
+      if (!win.__yetibrowser?.initialized) {
+        install();
+        return;
+      }
+
+      if (!Array.isArray(win.__yetibrowser.logs)) {
+        install();
+      }
+    },
+  });
+
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url?.startsWith("chrome://") || tab.url?.startsWith("edge://") || tab.url?.startsWith("about:")) {
+    console.warn("[yetibrowser] unable to inject helpers into special page", tab.url);
+  }
+}
+
+async function updateBadge(): Promise<void> {
+  const isConnected = connectedTabId !== null && socket?.readyState === WebSocket.OPEN;
+  try {
+    const text = isConnected ? "●" : "";
+    await chrome.action.setBadgeText({ text });
+    if (isConnected) {
+      try {
+        await chrome.action.setBadgeBackgroundColor({ color: "#111827" });
+      } catch (error) {
+        console.warn("[yetibrowser] failed to set badge background", error);
+      }
+      if (chrome.action.setBadgeTextColor) {
+        try {
+          await chrome.action.setBadgeTextColor({ color: "#facc15" });
+        } catch (error) {
+          console.warn("[yetibrowser] failed to set badge text color", error);
+        }
+      }
+    }
   } catch (error) {
-    console.warn("[yetibrowser] failed to initialize tab helpers", error);
+    console.warn("[yetibrowser] failed to set badge", error);
   }
 }

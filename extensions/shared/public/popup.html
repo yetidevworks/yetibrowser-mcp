@@ -12,9 +12,35 @@
         background: #10131a;
         color: #f4f5f7;
       }
+      .header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .header img {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+      }
       h1 {
         font-size: 16px;
-        margin: 0 0 12px 0;
+        margin: 0;
+      }
+      .tab-info {
+        font-size: 12px;
+        margin: 4px 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .tab-info a {
+        color: inherit;
+        text-decoration: none;
+        opacity: 0.7;
+      }
+      .tab-info a:hover {
+        text-decoration: underline;
       }
       button {
         width: 100%;
@@ -29,6 +55,12 @@
         background: #2563eb;
         color: white;
       }
+      button.first {
+        margin-top: 0;
+      }
+      button.middle {
+        margin-top: 4px;
+      }
       button.secondary {
         background: transparent;
         border: 1px solid rgba(255, 255, 255, 0.2);
@@ -40,22 +72,89 @@
       }
       .status {
         font-size: 13px;
-        margin-bottom: 12px;
         line-height: 1.4;
+      }
+      .tertiary {
+        margin-top: 0;
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      .danger {
+        background: #dc2626;
+        color: #fff;
+      }
+      button.last {
+        margin-top: 4px;
+      }
+      .danger:disabled {
+        opacity: 0.4;
+        color: rgba(255, 255, 255, 0.8);
+      }
+      dl.meta {
+        margin: 0 0 12px 0;
+        padding: 8px 12px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        font-size: 13px;
+      }
+      dl.meta div {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 6px;
+      }
+      dl.meta div:last-child {
+        margin-bottom: 0;
+      }
+      dl.meta span.label {
+        opacity: 0.6;
+      }
+      dl.meta span.value {
+        font-weight: 500;
+      }
+      .status.error {
+        color: #f87171;
       }
       .hint {
         font-size: 12px;
         opacity: 0.6;
         margin-top: 12px;
       }
+      .hint a {
+        color: #60a5fa;
+        text-decoration: none;
+      }
+      .hint a:hover {
+        text-decoration: underline;
+      }
     </style>
   </head>
   <body>
-    <h1>YetiBrowser</h1>
-    <div class="status" id="status"></div>
-    <button id="connect" class="primary">Connect this tab</button>
-    <button id="disconnect" class="secondary">Disconnect</button>
-    <p class="hint">Open the tab you want Codex to control, then click "Connect".</p>
+    <header class="header">
+      <img id="header-icon" src="icons/128.png" alt="YetiBrowser icon" />
+      <div>
+        <h1>YetiBrowser MCP</h1>
+      </div>
+    </header>
+    <div class="tab-info" id="tab-info" hidden>
+      <span id="tab-name"></span>
+      <a id="tab-url" href="#" target="_blank" rel="noreferrer"></a>
+    </div>
+    <dl class="meta">
+      <div><span class="label">Connected tab</span><span class="value" id="connected-tab">None</span></div>
+      <div><span class="label">Status</span><span class="value status error" id="status">Not connected</span></div>
+      <div><span class="label">Server</span><span class="value error" id="server-status">No server found</span></div>
+    </dl>
+    <button id="connect" class="primary first">Connect this tab</button>
+    <button id="go-to-tab" class="tertiary middle" disabled>Go to connected tab</button>
+    <button id="disconnect" class="danger last" disabled>Disconnect</button>
+    <p class="hint">
+      Open the tab you want to control, then click "Connect". Need setup help? See the
+      <a class="doc-link" href="https://github.com/yetidevworks/yetibrowser-mcp" target="_blank" rel="noreferrer"
+        >YetiBrowser MCP guide</a
+      >.
+    </p>
     <script type="module" src="popup.js"></script>
   </body>
 </html>

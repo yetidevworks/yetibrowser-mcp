@@ -112,6 +112,17 @@ export function createTools(): Tool[] {
     },
   };
 
+  const snapshotDiffTool: Tool = {
+    schema: {
+      name: "browser_snapshot_diff",
+      description: "Compare the most recent snapshot with the previous one to highlight DOM changes",
+      inputSchema: noInputSchema(),
+    },
+    handle: async (context) => {
+      return context.diffLatestSnapshots();
+    },
+  };
+
   const waitTool: Tool = {
     schema: {
       name: "browser_wait",
@@ -244,9 +255,13 @@ export function createTools(): Tool[] {
       const text = logs
         .map((log) => {
           const time = new Date(log.timestamp).toISOString();
-          return `[${time}] [${log.level}] ${log.message}`;
+          const lines = [`[${time}] [${log.level}] ${log.message}`];
+          if (log.stack) {
+            lines.push(log.stack);
+          }
+          return lines.join("\n");
         })
-        .join("\n");
+        .join("\n\n");
 
       return {
         content: [
@@ -259,8 +274,40 @@ export function createTools(): Tool[] {
     },
   };
 
+  const pageStateTool: Tool = {
+    schema: {
+      name: "browser_page_state",
+      description: "Extract form data, storage values, and cookies from the active page",
+      inputSchema: noInputSchema(),
+    },
+    handle: async (context) => {
+      const state = await context.call("pageState", {});
+      const summary = [
+        `Page state captured ${state.capturedAt}`,
+        `- Forms inspected: ${state.forms.length}`,
+        `- localStorage keys: ${state.localStorage.length}`,
+        `- sessionStorage keys: ${state.sessionStorage.length}`,
+        `- Cookies: ${state.cookies.length}`,
+        "",
+        "```json",
+        JSON.stringify(state, null, 2),
+        "```",
+      ].join("\n");
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: summary,
+          },
+        ],
+      };
+    },
+  };
+
   return [
     snapshotTool,
+    snapshotDiffTool,
     buildSnapshotTool("browser_navigate", "Navigate to a URL", "navigate"),
     buildSnapshotTool("browser_go_back", "Go back to the previous page", "goBack"),
     buildSnapshotTool("browser_go_forward", "Go forward to the next page", "goForward"),
@@ -272,5 +319,6 @@ export function createTools(): Tool[] {
     selectOptionTool,
     screenshotTool,
     consoleLogsTool,
+    pageStateTool,
   ];
 }

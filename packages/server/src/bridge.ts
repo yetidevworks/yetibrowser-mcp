@@ -52,7 +52,7 @@ export class ExtensionBridge {
     });
 
     await once(this.wss, "listening");
-    console.log(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
+    console.error(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
   }
 
   isConnected(): boolean {
@@ -134,7 +134,7 @@ export class ExtensionBridge {
     }
 
     this.socket = socket;
-    console.log(`[yetibrowser] Extension connected from ${request.socket.remoteAddress ?? "unknown"}`);
+    console.error(`[yetibrowser] Extension connected from ${request.socket.remoteAddress ?? "unknown"}`);
 
     socket.on("message", (data: RawData) => this.handleMessage(data));
     socket.on("error", (error: Error) => {
@@ -142,7 +142,7 @@ export class ExtensionBridge {
       this.rejectAllPending(new Error("Extension socket error"));
     });
     socket.on("close", () => {
-      console.log("[yetibrowser] Extension disconnected");
+      console.error("[yetibrowser] Extension disconnected");
       this.socket = undefined;
       this.rejectAllPending(new Error("Extension disconnected"));
     });
@@ -160,14 +160,14 @@ export class ExtensionBridge {
 
     if (message.type === "hello") {
       this.hello = { client: message.client, version: message.version };
-      console.log(
+      console.error(
         `[yetibrowser] Extension hello from ${message.client}${message.version ? ` v${message.version}` : ""}`,
       );
       return;
     }
 
     if (message.type === "event") {
-      console.log("[yetibrowser] extension event", message.event, message.payload);
+      console.error("[yetibrowser] extension event", message.event, message.payload);
       return;
     }
 
