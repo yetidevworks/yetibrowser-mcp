@@ -63,6 +63,7 @@ async function bootstrap() {
     wsPort = storedPort;
   }
   connectWebSocket();
+  void updateBadge();
 }
 function connectWebSocket() {
   if (socket && socket.readyState === WebSocket.OPEN) {
@@ -86,6 +87,7 @@ function connectWebSocket() {
     }
     sendHello();
     startKeepAlive();
+    void updateBadge();
   });
   socket.addEventListener("message", (event) => {
     handleSocketMessage(event.data).catch((error) => {
@@ -97,6 +99,7 @@ function connectWebSocket() {
     socket = null;
     stopKeepAlive();
     scheduleReconnect();
+    void updateBadge();
   });
   socket.addEventListener("error", (error) => {
     console.error("[yetibrowser] MCP socket error", error);
@@ -281,10 +284,12 @@ async function setConnectedTab(tabId) {
   await chrome.storage.local.set({ [STORAGE_KEYS.connectedTabId]: tabId });
   connectedTabId = tabId;
   await initializeTab(tabId);
+  void updateBadge();
 }
 async function clearConnectedTab() {
   await chrome.storage.local.remove(STORAGE_KEYS.connectedTabId);
   connectedTabId = null;
+  void updateBadge();
 }
 async function navigateTo(url) {
   const tab = await ensureTab();
@@ -671,16 +676,16 @@ async function selectOptions(selector, values, description) {
 }
 async function takeScreenshot(fullPage) {
   const tab = await ensureTab();
+  let base64;
   try {
-    const data = await captureScreenshotWithDebugger(tab.id, fullPage);
-    if (data) {
-      return { data, mimeType: "image/png" };
-    }
+    base64 = await captureScreenshotWithDebugger(tab.id, fullPage);
   } catch (error) {
     console.warn("[yetibrowser] debugger capture failed, falling back", error);
   }
-  const fallback = await captureVisibleTabFallback(tab.windowId);
-  return { data: fallback, mimeType: "image/png" };
+  if (!base64) {
+    base64 = await captureVisibleTabFallback(tab.windowId);
+  }
+  return await encodeScreenshot(base64);
 }
 var DEBUGGER_PROTOCOL_VERSION = "1.3";
 async function captureScreenshotWithDebugger(tabId, fullPage) {
@@ -782,6 +787,37 @@ async function detachDebugger(target) {
     });
   });
 }
+async function encodeScreenshot(base64Png) {
+  const bytes = Uint8Array.from(atob(base64Png), (char) => char.charCodeAt(0));
+  const blob = new Blob([bytes], { type: "image/png" });
+  const bitmap = await createImageBitmap(blob);
+  const maxWidth = 1280;
+  const scale = bitmap.width > maxWidth ? maxWidth / bitmap.width : 1;
+  const targetWidth = Math.round(bitmap.width * scale);
+  const targetHeight = Math.round(bitmap.height * scale);
+  const canvas = new OffscreenCanvas(targetWidth, targetHeight);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Unable to create drawing context for screenshot");
+  }
+  ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
+  let outputBlob;
+  let mimeType = "image/webp";
+  try {
+    outputBlob = await canvas.convertToBlob({ type: "image/webp", quality: 0.85 });
+  } catch (error) {
+    console.warn("[yetibrowser] webp conversion failed, falling back to jpeg", error);
+    outputBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    mimeType = "image/jpeg";
+  }
+  const arrayBuffer = await outputBlob.arrayBuffer();
+  const outputBytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  outputBytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return { data: btoa(binary), mimeType };
+}
 async function sendDebuggerCommand(target, method, params) {
   return await new Promise((resolve, reject) => {
     chrome.debugger.sendCommand(target, method, params, (result) => {
@@ -810,6 +846,7 @@ async function initializeTab(tabId) {
   } catch (error) {
     console.warn("[yetibrowser] failed to initialize tab helpers", error);
   }
+  void updateBadge();
 }
 async function ensurePageHelpers(tabId) {
   await chrome.scripting.executeScript({
@@ -915,6 +952,29 @@ async function ensurePageHelpers(tabId) {
   const tab = await chrome.tabs.get(tabId);
   if (tab.url?.startsWith("chrome://") || tab.url?.startsWith("edge://") || tab.url?.startsWith("about:")) {
     console.warn("[yetibrowser] unable to inject helpers into special page", tab.url);
+  }
+}
+async function updateBadge() {
+  const isConnected = connectedTabId !== null && socket?.readyState === WebSocket.OPEN;
+  try {
+    const text = isConnected ? "\u25CF" : "";
+    await chrome.action.setBadgeText({ text });
+    if (isConnected) {
+      try {
+        await chrome.action.setBadgeBackgroundColor({ color: "#111827" });
+      } catch (error) {
+        console.warn("[yetibrowser] failed to set badge background", error);
+      }
+      if (chrome.action.setBadgeTextColor) {
+        try {
+          await chrome.action.setBadgeTextColor({ color: "#facc15" });
+        } catch (error) {
+          console.warn("[yetibrowser] failed to set badge text color", error);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn("[yetibrowser] failed to set badge", error);
   }
 }
 //# sourceMappingURL=background.js.map

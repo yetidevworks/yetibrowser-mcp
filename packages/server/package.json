@@ -1,6 +1,6 @@
 {
   "name": "@yetidevworks/server",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "type": "module",
   "license": "MIT",
   "description": "Model Context Protocol server that bridges Claude-style MCP clients to a live browser tab via YetiBrowser",
@@ -36,7 +36,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@yetidevworks/shared": "0.1.1",
+    "@yetidevworks/shared": "1.0.0",
     "@modelcontextprotocol/sdk": "^1.8.0",
     "commander": "^13.1.0",
     "ws": "^8.18.1",

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "YetiBrowser MCP Bridge",
   "description": "Expose your current Firefox tab to the YetiBrowser MCP server.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

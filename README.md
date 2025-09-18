@@ -1,70 +1,76 @@
 # YetiBrowser MCP
 
-An open, hackable alternative to BrowserMCP that keeps the useful workflow (MCP server + Chrome extension) while avoiding closed-source dependencies. This repository is split into:
+YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflow. It links a Node-based MCP server with Chrome/Firefox extensions so Model Context Protocol clients—Codex/Claude Code, Cursor, Windsurf, MCP Inspector, or your own tools—can automate a real browser tab while keeping every byte on your machine and auditable.
 
-- `packages/shared` – shared TypeScript definitions for messages and tool schemas
-- `packages/server` – the Model Context Protocol server that bridges MCP clients to a running Chrome tab
-- `extensions/shared` – shared browser extension source (background/popup) and assets
-- `extensions/chrome` – Chrome packaging for the shared extension code
-- `extensions/firefox` – Firefox packaging for the shared extension code
+## Why pick YetiBrowser MCP?
 
-Development still in progress – expect rough edges while we bootstrap the new stack.
+- **Transparent and hackable** – no blob downloads. Inspect, fork, and extend every component.
+- **Local-first** – the extension talks only to a localhost MCP server; browsing data never leaves your device.
+- **Cross-browser** – shared logic powers both Chrome and Firefox packages.
+- **Developer-focused tooling** – richer console capture, DOM diffing, page-state dumps, and full-page screenshots built for debugging and QA.
+- **Production-friendly** – scripts and docs for packaging, publishing, and integrating with IDE workflows.
 
-## Current tooling
+### Repository layout
 
-- DOM snapshots with diffing (`browser_snapshot`, `browser_snapshot_diff`) to understand how the page changes over time
-- Console and error capture (`browser_get_console_logs`) including stack traces for quick debugging
-- Page state extraction (`browser_page_state`) that gathers form inputs, storage contents, and cookies for reproduction steps
+- `packages/shared` – shared TypeScript definitions for messages and tool schemas.
+- `packages/server` – the MCP server that bridges MCP clients to a running browser tab.
+- `extensions/shared` – shared extension source (background/popup) and assets.
+- `extensions/chrome` / `extensions/firefox` – per-browser packaging layers.
+- `docs/` – workspace commands, publishing checklists, and feature notes.
+- `scripts/` – helper utilities such as `package-extensions.sh` for release zips.
 
-## MCP client configuration
+## MCP Tools Available
+
+- `browser_snapshot` – capture an accessibility-oriented snapshot of the current page
+- `browser_snapshot_diff` – compare the two most recent snapshots to highlight DOM/ARIA changes
+- `browser_navigate` – load a new URL in the connected tab and return an updated snapshot
+- `browser_go_back` / `browser_go_forward` – move through history while keeping MCP in sync
+- `browser_wait` – pause automation for a set number of seconds
+- `browser_press_key` – simulate a keyboard key press on the focused element
+- `browser_click` – click the element identified by a CSS selector
+- `browser_hover` – hover the pointer over the targeted element
+- `browser_type` – type text (optionally submitting with Enter) into an editable element
+- `browser_select_option` – choose one or more options in a `<select>` element
+- `browser_screenshot` – capture a viewport or full-page screenshot via the DevTools protocol
+- `browser_get_console_logs` – return recent console output, including errors with stack traces
+- `browser_page_state` – dump forms, storage keys, and cookies for the connected page
+
+## MCP Server Installation
 
 ### Codex CLI
 
-- Edit your ~/.codex/config.toml and add the MCP entry
-
-[mcp_servers.yetibrowser-mcp]
-command = "npx"
-args = ["yetibrowser-mcp", "--ws-port", "9010"]
-
-### Claude Code / Claude Desktop
-- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx yetibrowser-mcp --ws-port 9010` (or run the locally built CLI).
-- Create or update `~/Library/Application Support/Claude/claude_desktop_config.json`:
-  ```json
-  {
-    "mcpServers": {
-      "yetibrowser-mcp": {
-        "command": "npx",
-        "args": ["yetibrowser-mcp", "--ws-port", "9010"]
-      }
-    }
-  }
+- Edit your ~/.codex/config.toml and add the MCP entry:
+  ```toml
+  [mcp_servers.yetibrowser-mcp]
+  command = "npx"
+  args = ["yetibrowser-mcp", "--ws-port", "9010"]
   ```
-- Restart Claude so it picks up the new MCP server; you should see `yetibrowser-mcp` listed under the MCP tools menu once the extension connects.
+- Restart `codex` CLI command; you should see `yetibrowser-mcp` listing under `/mcp` tools.
 
-### MCP Inspector
+### Claude Code
 
-- `npx @modelcontextprotocol/inspector yetibrowser-mcp -- --ws-port 9010` to run and inspect the MCP server in conjuction with the yetibrowser extension
+- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx yetibrowser-mcp --ws-port 9010` (or run the locally built CLI).
+- Add the server entry to `~/Library/Application Support/Claude/claude_desktop_config.json` (see the example in [`docs/publishing.md`](docs/publishing.md)).
+- Restart `claude` so it picks up the new MCP server; you should see `yetibrowser-mcp` listed under the `/mcp` tools menu once the extension connects.
 
 ### Other MCP-aware clients
+
 - Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp --ws-port 9010`) and pointing it at the Chrome extension port.
 - The server exposes the standard MCP transport over stdio, so use whatever configuration mechanism your client supports to run the command above when a tab is connected.
 
-## Workspace commands
+### MCP Inspector
 
-### MCP server (`packages/server`)
-- `npm run build --workspace @yetidevworks/server` – bundle the server into `dist/`
-- `npm run dev --workspace @yetidevworks/server` – start the server in watch mode for local development
-- `npm run clean --workspace @yetidevworks/server` – remove build artifacts
+- For testing and debugging outside a coding agent.
+- `npx @modelcontextprotocol/inspector yetibrowser-mcp -- --ws-port 9010` to run and inspect the MCP server in conjunction with the YetiBrowser MCP browser extension.
 
-### Chrome extension (`extensions/chrome`)
-- `npm run build --workspace yetibrowser-extension` – compile the unpacked Chrome extension into `extensions/chrome/dist`
-- `npm run lint --workspace yetibrowser-extension` – run eslint over the shared extension source
+### Troubleshooting
 
-### Firefox extension (`extensions/firefox`)
-- `npm run build --workspace yetibrowser-extension-firefox` – compile the unpacked Firefox extension into `extensions/firefox/dist`
-- `npm run lint --workspace yetibrowser-extension-firefox` – run eslint over the shared extension source
+- If you get a connection error, check to make sure you don't have another instance of the server running on the same port. Default is port `9010`.
 
-### Repository-wide
-- `npm run typecheck` – run the TypeScript project references build across all workspaces
-- `npm run lint` – lint all packages and the extension
-- `npm test` – placeholder hook (currently prints `No tests yet`)
+## Documentation & build scripts
+
+- Workspace commands live in [`docs/workspace-commands.md`](docs/workspace-commands.md).
+- Publishing steps (npm + extension stores) are in [`docs/publishing.md`](docs/publishing.md).
+- Screenshot behaviour is documented in [`docs/screenshot.md`](docs/screenshot.md).
+- Generate distributable Chrome/Firefox zips with `./scripts/package-extensions.sh` (outputs to `artifacts/`).
+- A repository-level privacy policy is available in [`PRIVACY.md`](PRIVACY.md).
