@@ -1,0 +1,16 @@
+{
+  "name": "yetibrowser-extension-firefox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rimraf dist && tsup && node scripts/copy-assets.mjs",
+    "lint": "eslint ../shared/src"
+  },
+  "devDependencies": {
+    "rimraf": "^5.0.7",
+    "tsup": "^8.1.0",
+    "typescript": "^5.5.4",
+    "@types/firefox-webext-browser": "^120.0.1"
+  }
+}

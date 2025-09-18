@@ -1,0 +1,22 @@
+{
+  "name": "yetibrowser-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Open implementation of a Yeti Browser MCP server and companion browser extensions",
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "build": "npm run build --workspaces",
+    "test": "echo 'No tests yet'"
+  },
+  "workspaces": [
+    "packages/*",
+    "extensions/*"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "eslint": "^9.7.0",
+    "typescript": "^5.5.4"
+  }
+}

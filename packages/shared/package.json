@@ -1,0 +1,16 @@
+{
+  "name": "@yetidevworks/shared",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "clean": "rimraf dist"
+  },
+  "devDependencies": {
+    "tsup": "^8.1.0",
+    "rimraf": "^5.0.7"
+  }
+}
