@@ -1,6 +1,6 @@
 {
   "name": "yetibrowser-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "license": "MIT",
   "description": "Open implementation of a Yeti Browser MCP server and companion browser extensions",

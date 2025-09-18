@@ -6,7 +6,7 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 
 - **Transparent and hackable** – no blob downloads. Inspect, fork, and extend every component.
 - **Local-first** – the extension talks only to a localhost MCP server; browsing data never leaves your device.
-- **Cross-browser** – shared logic powers both Chrome and Firefox packages.
+- **Cross-browser** – shared logic powers both Chrome and Firefox packages (Firefox build is pending better Manifest V3 support, so connection UX may be limited until Mozilla ships full MV3 APIs).
 - **Developer-focused tooling** – richer console capture, DOM diffing, page-state dumps, and full-page screenshots built for debugging and QA.
 - **Production-friendly** – scripts and docs for packaging, publishing, and integrating with IDE workflows.
 

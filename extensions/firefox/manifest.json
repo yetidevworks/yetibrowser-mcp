@@ -19,8 +19,7 @@
   "permissions": [
     "tabs",
     "storage",
-    "scripting",
-    "debugger"
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"

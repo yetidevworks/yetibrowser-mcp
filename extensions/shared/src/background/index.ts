@@ -821,10 +821,12 @@ async function takeScreenshot(fullPage: boolean): Promise<{ data: string; mimeTy
   const tab = await ensureTab();
   let base64: string | undefined;
 
-  try {
-    base64 = await captureScreenshotWithDebugger(tab.id!, fullPage);
-  } catch (error) {
-    console.warn("[yetibrowser] debugger capture failed, falling back", error);
+  if (canUseDebugger()) {
+    try {
+      base64 = await captureScreenshotWithDebugger(tab.id!, fullPage);
+    } catch (error) {
+      console.warn("[yetibrowser] debugger capture failed, falling back", error);
+    }
   }
 
   if (!base64) {
@@ -832,6 +834,16 @@ async function takeScreenshot(fullPage: boolean): Promise<{ data: string; mimeTy
   }
 
   return await encodeScreenshot(base64);
+}
+
+function canUseDebugger(): boolean {
+  const manifest = chrome.runtime.getManifest();
+  const permissions = Array.isArray(manifest.permissions) ? manifest.permissions : [];
+  const optionalPermissions = Array.isArray(manifest.optional_permissions) ? manifest.optional_permissions : [];
+  if (!permissions.includes("debugger") && !optionalPermissions.includes("debugger")) {
+    return false;
+  }
+  return typeof chrome.debugger?.attach === "function";
 }
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
