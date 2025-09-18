@@ -3,10 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "author": "Yetidevworks",
+  "description": "Chrome packaging for the YetiBrowser MCP companion extension",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp.git"
+  },
+  "homepage": "https://github.com/yetidevworks/yetibrowser-mcp",
+  "bugs": {
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp/issues"
+  },
   "scripts": {
     "build": "rimraf dist && tsup && node scripts/copy-assets.mjs",
     "lint": "eslint ../shared/src"
   },
+  "keywords": [
+    "chrome",
+    "extension",
+    "mcp",
+    "browser",
+    "yetibrowser"
+  ],
   "devDependencies": {
     "@types/chrome": "^0.0.272",
     "rimraf": "^5.0.7",

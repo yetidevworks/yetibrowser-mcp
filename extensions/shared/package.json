@@ -3,9 +3,27 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "author": "Yetidevworks",
+  "description": "Shared browser extension sources (background, popup, assets) for YetiBrowser MCP",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp.git"
+  },
+  "homepage": "https://github.com/yetidevworks/yetibrowser-mcp",
+  "bugs": {
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp/issues"
+  },
   "scripts": {
     "lint": "eslint src"
   },
+  "keywords": [
+    "mcp",
+    "browser",
+    "extension",
+    "shared",
+    "yetibrowser"
+  ],
   "devDependencies": {
     "@types/chrome": "^0.0.272"
   }
