@@ -2,6 +2,15 @@
   "name": "@yetidevworks/server",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp.git"
+  },
+  "homepage": "https://github.com/yetidevworks/yetibrowser-mcp",
+  "bugs": {
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp/issues"
+  },
   "bin": {
     "yetibrowser-mcp": "dist/index.js"
   },
@@ -9,7 +18,11 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsup src/index.ts --format esm",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "dependencies": {
     "@yetidevworks/shared": "0.1.0",

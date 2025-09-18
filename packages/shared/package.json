@@ -2,12 +2,25 @@
   "name": "@yetidevworks/shared",
   "version": "0.1.0",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp.git"
+  },
+  "homepage": "https://github.com/yetidevworks/yetibrowser-mcp",
+  "bugs": {
+    "url": "https://github.com/yetidevworks/yetibrowser-mcp/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": ["dist"],
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "tsup": "^8.1.0",
