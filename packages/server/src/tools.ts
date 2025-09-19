@@ -305,6 +305,34 @@ export function createTools(): Tool[] {
     },
   };
 
+  const connectionInfoTool: Tool = {
+    schema: {
+      name: "browser_connection_info",
+      description: "Show the MCP bridge WebSocket port, connection state, and extension info",
+      inputSchema: noInputSchema(),
+    },
+    handle: async (context) => {
+      const info = context.getConnectionInfo();
+      const lines = [
+        `WebSocket port: ${info.wsPort}`,
+        `Extension connected: ${info.connected ? "yes" : "no"}`,
+      ];
+      if (info.extension) {
+        const versionSuffix = info.extension.version ? ` v${info.extension.version}` : "";
+        lines.push(`Extension hello: ${info.extension.client}${versionSuffix}`);
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: lines.join("\n"),
+          },
+        ],
+      };
+    },
+  };
+
   return [
     snapshotTool,
     snapshotDiffTool,
@@ -320,5 +348,6 @@ export function createTools(): Tool[] {
     screenshotTool,
     consoleLogsTool,
     pageStateTool,
+    connectionInfoTool,
   ];
 }

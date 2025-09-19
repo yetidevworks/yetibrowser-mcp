@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 
 // src/index.ts
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Command, InvalidArgumentError } from "commander";
+import { randomUUID as randomUUID2 } from "crypto";
+import { once } from "events";
+import { createServer } from "http";
 import { createRequire } from "module";
 
 // src/bridge.ts
 import { randomUUID } from "crypto";
-import { once } from "events";
 import { WebSocketServer, WebSocket } from "ws";
 var DEFAULT_TIMEOUT_MS = 3e4;
 var ExtensionBridge = class {
@@ -26,12 +29,43 @@ var ExtensionBridge = class {
     if (this.wss) {
       return;
     }
-    this.wss = new WebSocketServer({ port: this.options.port });
-    this.wss.on("connection", (socket, request) => this.handleConnection(socket, request));
-    this.wss.on("error", (error) => {
+    const wss = new WebSocketServer({ port: this.options.port });
+    this.wss = wss;
+    wss.on("connection", (socket, request) => this.handleConnection(socket, request));
+    const listenPromise = new Promise((resolve, reject) => {
+      const handleError = (error) => {
+        const err = error;
+        if (err?.code === "EADDRINUSE") {
+          reject(
+            new Error(
+              `WebSocket port ${this.options.port} is already in use. Another YetiBrowser MCP instance might be running. Use --ws-port to pick a different port.`
+            )
+          );
+        } else {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+      wss.once("error", handleError);
+      wss.once("listening", () => {
+        wss.off("error", handleError);
+        resolve();
+      });
+    });
+    try {
+      await listenPromise;
+    } catch (error) {
+      this.wss = void 0;
+      wss.removeAllListeners();
+      try {
+        wss.close();
+      } catch (closeError) {
+        console.error("Failed to close WebSocket server after startup error", closeError);
+      }
+      throw error;
+    }
+    wss.on("error", (error) => {
       console.error("WebSocket server error", error);
     });
-    await once(this.wss, "listening");
     console.error(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
   }
   isConnected() {
@@ -39,6 +73,9 @@ var ExtensionBridge = class {
   }
   getHelloInfo() {
     return this.hello;
+  }
+  getPort() {
+    return this.options.port;
   }
   async close() {
     this.rejectAllPending(new Error("Extension bridge shutting down"));
@@ -284,6 +321,13 @@ ${snapshotResult.formatted}
           text: summaryLines.join("\n")
         }
       ]
+    };
+  }
+  getConnectionInfo() {
+    return {
+      wsPort: this.bridge.getPort(),
+      connected: this.bridge.isConnected(),
+      extension: this.bridge.getHelloInfo()
     };
   }
 };
@@ -566,6 +610,32 @@ function createTools() {
       };
     }
   };
+  const connectionInfoTool = {
+    schema: {
+      name: "browser_connection_info",
+      description: "Show the MCP bridge WebSocket port, connection state, and extension info",
+      inputSchema: noInputSchema()
+    },
+    handle: async (context) => {
+      const info = context.getConnectionInfo();
+      const lines = [
+        `WebSocket port: ${info.wsPort}`,
+        `Extension connected: ${info.connected ? "yes" : "no"}`
+      ];
+      if (info.extension) {
+        const versionSuffix = info.extension.version ? ` v${info.extension.version}` : "";
+        lines.push(`Extension hello: ${info.extension.client}${versionSuffix}`);
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: lines.join("\n")
+          }
+        ]
+      };
+    }
+  };
   return [
     snapshotTool,
     snapshotDiffTool,
@@ -580,7 +650,8 @@ function createTools() {
     selectOptionTool,
     screenshotTool,
     consoleLogsTool,
-    pageStateTool
+    pageStateTool,
+    connectionInfoTool
   ];
 }
 
@@ -644,6 +715,7 @@ async function createMcpServer(options) {
 // src/index.ts
 var require2 = createRequire(import.meta.url);
 var packageJson = require2("../package.json");
+var AUTO_WS_PORTS = [9010, 9011, 9012, 9013, 9014, 9015, 9016, 9017, 9018, 9019, 9020];
 function parsePort(value) {
   const port = Number(value);
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
@@ -651,29 +723,167 @@ function parsePort(value) {
   }
   return port;
 }
+function buildPortCandidates(preferred) {
+  const index = AUTO_WS_PORTS.indexOf(preferred);
+  if (index === -1) {
+    return [preferred];
+  }
+  return [...AUTO_WS_PORTS.slice(index), ...AUTO_WS_PORTS.slice(0, index)];
+}
+async function startBridgeWithFallback(portCandidates) {
+  let lastError;
+  for (const candidatePort of portCandidates) {
+    const candidateBridge = new ExtensionBridge({ port: candidatePort });
+    try {
+      await candidateBridge.start();
+      if (candidatePort !== portCandidates[0]) {
+        console.error(`[yetibrowser] WebSocket port ${portCandidates[0]} busy, switched to ${candidatePort}`);
+      }
+      return { bridge: candidateBridge, port: candidatePort };
+    } catch (error) {
+      lastError = error;
+      await candidateBridge.close().catch(() => {
+      });
+      if (error instanceof Error && error.message.includes("already in use")) {
+        continue;
+      }
+      const message2 = error instanceof Error ? error.message : String(error);
+      console.error(`[yetibrowser] Failed to start WebSocket bridge: ${message2}`);
+      process.exit(1);
+    }
+  }
+  const message = lastError instanceof Error ? lastError.message : String(lastError ?? "unknown error");
+  console.error(`[yetibrowser] Failed to find available WebSocket port near ${portCandidates[0]}: ${message}`);
+  process.exit(1);
+}
 var program = new Command();
 program.name("yetibrowser-mcp").version(packageJson.version).description("YetiBrowser MCP server").option(
   "--ws-port <port>",
   "WebSocket port exposed for the browser extension",
   parsePort,
   9010
-).action(async ({ wsPort }) => {
-  const bridge = new ExtensionBridge({ port: wsPort });
-  await bridge.start();
-  const server = await createMcpServer({
-    name: "YetiBrowser MCP",
-    version: packageJson.version,
-    bridge
-  });
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  const shutdown = async () => {
-    console.error("[yetibrowser] shutting down");
-    await Promise.allSettled([server.close(), bridge.close()]);
-    process.exit(0);
-  };
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-  process.stdin.on("close", shutdown);
-});
+).option(
+  "--http-port <port>",
+  "Optional Streamable HTTP endpoint for sharing the server across multiple MCP clients",
+  parsePort
+).action(
+  async ({ wsPort, httpPort }) => {
+    const portCandidates = buildPortCandidates(wsPort);
+    const { bridge, port: activeWsPort } = await startBridgeWithFallback(portCandidates);
+    wsPort = activeWsPort;
+    const server = await createMcpServer({
+      name: "YetiBrowser MCP",
+      version: packageJson.version,
+      bridge
+    });
+    let httpServer;
+    let httpTransport;
+    let stdioTransport;
+    let shuttingDown = false;
+    const shutdown = async () => {
+      if (shuttingDown) {
+        return;
+      }
+      shuttingDown = true;
+      console.error("[yetibrowser] shutting down");
+      const tasks = [server.close(), bridge.close()];
+      if (httpTransport) {
+        tasks.push(httpTransport.close());
+      }
+      if (httpServer) {
+        tasks.push(
+          new Promise((resolve) => {
+            httpServer.close(() => resolve());
+          })
+        );
+      }
+      if (stdioTransport) {
+        tasks.push(stdioTransport.close());
+      }
+      await Promise.allSettled(tasks);
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+    if (httpPort !== void 0) {
+      httpTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID2(),
+        enableJsonResponse: true
+      });
+      httpTransport.onerror = (error) => {
+        console.error("[yetibrowser] HTTP transport error", error);
+      };
+      await server.connect(httpTransport);
+      httpServer = createServer(async (req, res) => {
+        try {
+          if (!req.url) {
+            res.writeHead(400).end("Missing request URL");
+            return;
+          }
+          const requestUrl = new URL(req.url, `http://${req.headers.host ?? `localhost:${httpPort}`}`);
+          if (requestUrl.pathname !== "/mcp") {
+            res.writeHead(404).end("Not Found");
+            return;
+          }
+          const acceptHeader = req.headers.accept;
+          if (typeof acceptHeader === "string") {
+            const parts = acceptHeader.split(",").map((value) => value.trim());
+            if (!parts.includes("text/event-stream")) {
+              parts.push("text/event-stream");
+            }
+            if (!parts.includes("application/json")) {
+              parts.unshift("application/json");
+            }
+            req.headers.accept = parts.join(", ");
+          } else if (Array.isArray(acceptHeader)) {
+            const headerValues = acceptHeader;
+            const combined = headerValues.join(",");
+            const entries = combined.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+            const parts = new Set(entries);
+            parts.add("application/json");
+            parts.add("text/event-stream");
+            req.headers.accept = Array.from(parts).join(", ");
+          } else {
+            req.headers.accept = "application/json, text/event-stream";
+          }
+          await httpTransport.handleRequest(req, res);
+        } catch (error) {
+          console.error("[yetibrowser] Failed to handle HTTP request", error);
+          if (!res.headersSent) {
+            res.writeHead(500).end("Internal Server Error");
+          } else {
+            res.end();
+          }
+        }
+      });
+      const listenPromise = Promise.race([
+        once(httpServer, "listening"),
+        once(httpServer, "error").then(([error]) => {
+          throw error;
+        })
+      ]);
+      httpServer.listen(httpPort, "127.0.0.1");
+      try {
+        await listenPromise;
+      } catch (error) {
+        const err = error;
+        if (err?.code === "EADDRINUSE") {
+          console.error(
+            `[yetibrowser] Failed to start HTTP transport: port ${httpPort} is already in use. Pick a different --http-port value.`
+          );
+        } else {
+          console.error("[yetibrowser] Failed to start HTTP transport", err);
+        }
+        await shutdown();
+        return;
+      }
+      console.error(`[yetibrowser] Streamable HTTP endpoint ready at http://127.0.0.1:${httpPort}/mcp`);
+      process.stdin.on("close", shutdown);
+    } else {
+      stdioTransport = new StdioServerTransport();
+      await server.connect(stdioTransport);
+      process.stdin.on("close", shutdown);
+    }
+  }
+);
 program.parse();

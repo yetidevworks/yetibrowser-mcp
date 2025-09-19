@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { once } from "node:events";
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 import type { RawData } from "ws";
@@ -45,13 +44,48 @@ export class ExtensionBridge {
       return;
     }
 
-    this.wss = new WebSocketServer({ port: this.options.port });
-    this.wss.on("connection", (socket, request) => this.handleConnection(socket, request));
-    this.wss.on("error", (error) => {
+    const wss = new WebSocketServer({ port: this.options.port });
+    this.wss = wss;
+    wss.on("connection", (socket, request) => this.handleConnection(socket, request));
+
+    const listenPromise = new Promise<void>((resolve, reject) => {
+      const handleError = (error: unknown) => {
+        const err = error as NodeJS.ErrnoException;
+        if (err?.code === "EADDRINUSE") {
+          reject(
+            new Error(
+              `WebSocket port ${this.options.port} is already in use. Another YetiBrowser MCP instance might be running. Use --ws-port to pick a different port.`,
+            ),
+          );
+        } else {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      };
+
+      wss.once("error", handleError);
+      wss.once("listening", () => {
+        wss.off("error", handleError);
+        resolve();
+      });
+    });
+
+    try {
+      await listenPromise;
+    } catch (error) {
+      this.wss = undefined;
+      wss.removeAllListeners();
+      try {
+        wss.close();
+      } catch (closeError) {
+        console.error("Failed to close WebSocket server after startup error", closeError);
+      }
+      throw error;
+    }
+
+    wss.on("error", (error) => {
       console.error("WebSocket server error", error);
     });
 
-    await once(this.wss, "listening");
     console.error(`[yetibrowser] Waiting for extension on ws://localhost:${this.options.port}`);
   }
 
@@ -61,6 +95,10 @@ export class ExtensionBridge {
 
   getHelloInfo(): { client: string; version?: string } | undefined {
     return this.hello;
+  }
+
+  getPort(): number {
+    return this.options.port;
   }
 
   async close(): Promise<void> {

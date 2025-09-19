@@ -116,6 +116,70 @@
       .status.error {
         color: #f87171;
       }
+      .config {
+        margin: 12px 0 16px 0;
+        padding: 12px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        font-size: 13px;
+      }
+      .config-label {
+        opacity: 0.7;
+        display: block;
+        margin-bottom: 4px;
+      }
+      .config-select,
+      .config-input {
+        width: 100%;
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(4, 6, 12, 0.4);
+        color: inherit;
+        font: inherit;
+      }
+      .config-select:focus,
+      .config-input:focus {
+        outline: 2px solid rgba(96, 165, 250, 0.65);
+        outline-offset: 1px;
+      }
+      .config-select:disabled,
+      .config-input:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      .config-input::placeholder {
+        color: rgba(255, 255, 255, 0.35);
+      }
+      .config-input {
+        -moz-appearance: textfield;
+      }
+      .config-input::-webkit-outer-spin-button,
+      .config-input::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
+      }
+      .config-manual {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .config-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .config-row .config-input {
+        width: 100%;
+        flex: 1;
+      }
+      .config-row .apply {
+        flex: 0 0 auto;
+        padding: 6px 12px;
+      }
       .hint {
         font-size: 12px;
         opacity: 0.6;
@@ -146,6 +210,27 @@
       <div><span class="label">Status</span><span class="value status error" id="status">Not connected</span></div>
       <div><span class="label">Server</span><span class="value error" id="server-status">No server found</span></div>
     </dl>
+    <div class="config" id="port-config">
+      <label for="port-mode" class="config-label">Connection mode</label>
+      <select id="port-mode" class="config-select">
+        <option value="auto">Automatic (ports 9010-9020)</option>
+        <option value="manual">Manual port</option>
+      </select>
+      <div class="config-manual" id="port-manual-group" hidden>
+        <label for="port-input" class="config-label">WebSocket port</label>
+        <div class="config-row">
+          <input
+            id="port-input"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            placeholder="9010"
+            class="config-input"
+          />
+          <button id="apply-port" class="secondary apply">Apply</button>
+        </div>
+      </div>
+    </div>
     <button id="connect" class="primary first">Connect this tab</button>
     <button id="go-to-tab" class="tertiary middle" disabled>Go to connected tab</button>
     <button id="disconnect" class="danger last" disabled>Disconnect</button>

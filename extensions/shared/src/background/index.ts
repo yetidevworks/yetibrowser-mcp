@@ -15,15 +15,25 @@ import type {
 const STORAGE_KEYS = {
   connectedTabId: "yetibrowser:connectedTabId",
   wsPort: "yetibrowser:wsPort",
+  wsPortMode: "yetibrowser:wsPortMode",
 };
 
 const DEFAULT_WS_PORT = 9010;
+const DEFAULT_PORT_MODE = "auto" satisfies PortMode;
+const FALLBACK_WS_PORTS = [
+  9010, 9011, 9012, 9013, 9014, 9015, 9016, 9017, 9018, 9019, 9020,
+];
 
 let connectedTabId: number | null = null;
 let wsPort = DEFAULT_WS_PORT;
+let portMode: PortMode = DEFAULT_PORT_MODE;
+let fallbackPortIndex = 0;
 let socket: WebSocket | null = null;
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+let expectedSocketClose = false;
+let socketOpenedInCurrentAttempt = false;
+let fallbackAdvancedForCurrentAttempt = false;
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[yetibrowser] extension installed");
@@ -54,8 +64,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       tabId: connectedTabId,
       wsPort,
       socketConnected: socket?.readyState === WebSocket.OPEN,
+      portMode,
     });
     return;
+  }
+
+  if (message.type === "yetibrowser/setPortConfig") {
+    const { mode, port } = message as { mode: PortMode; port?: number };
+    void setPortConfiguration(mode, port)
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) =>
+        sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }),
+      );
+    return true;
   }
 });
 
@@ -72,8 +93,27 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
   if (STORAGE_KEYS.wsPort in changes) {
     const value = changes[STORAGE_KEYS.wsPort]?.newValue;
-    wsPort = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_WS_PORT;
+    const parsed = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_WS_PORT;
+    if (parsed === wsPort) {
+      return;
+    }
+    wsPort = parsed;
+    updateFallbackIndex(parsed);
     console.log("[yetibrowser] websocket port changed", wsPort);
+    reconnectWebSocket();
+  }
+
+  if (STORAGE_KEYS.wsPortMode in changes) {
+    const value = changes[STORAGE_KEYS.wsPortMode]?.newValue;
+    const parsed = value === "manual" ? "manual" : DEFAULT_PORT_MODE;
+    if (parsed === portMode) {
+      return;
+    }
+    portMode = parsed;
+    if (portMode === "auto") {
+      updateFallbackIndex(wsPort);
+    }
+    console.log("[yetibrowser] websocket port mode changed", portMode);
     reconnectWebSocket();
   }
 });
@@ -84,14 +124,20 @@ async function bootstrap(): Promise<void> {
   const stored = await chrome.storage.local.get(STORAGE_KEYS);
   const storedTabId = stored[STORAGE_KEYS.connectedTabId];
   const storedPort = stored[STORAGE_KEYS.wsPort];
+  const storedMode = stored[STORAGE_KEYS.wsPortMode];
 
   if (typeof storedTabId === "number") {
     connectedTabId = storedTabId;
     await initializeTab(storedTabId);
   }
 
+  if (storedMode === "manual" || storedMode === "auto") {
+    portMode = storedMode;
+  }
+
   if (typeof storedPort === "number" && Number.isFinite(storedPort)) {
     wsPort = storedPort;
+    updateFallbackIndex(storedPort);
   }
 
   connectWebSocket();
@@ -107,10 +153,15 @@ function connectWebSocket(): void {
     return;
   }
 
+  expectedSocketClose = false;
+  socketOpenedInCurrentAttempt = false;
+  fallbackAdvancedForCurrentAttempt = false;
+
   try {
     socket = new WebSocket(`ws://localhost:${wsPort}`);
   } catch (error) {
     console.error("[yetibrowser] failed to create WebSocket", error);
+    advanceFallbackPort();
     scheduleReconnect();
     return;
   }
@@ -121,6 +172,10 @@ function connectWebSocket(): void {
       clearTimeout(reconnectTimeout);
       reconnectTimeout = null;
     }
+    socketOpenedInCurrentAttempt = true;
+    persistWsPortIfNeeded(wsPort).catch((error) => {
+      console.error("[yetibrowser] failed to persist websocket port", error);
+    });
     sendHello();
     startKeepAlive();
     void updateBadge();
@@ -136,17 +191,25 @@ function connectWebSocket(): void {
     console.warn("[yetibrowser] MCP socket closed");
     socket = null;
     stopKeepAlive();
+    if (!expectedSocketClose && !socketOpenedInCurrentAttempt) {
+      advanceFallbackPort();
+    }
+    expectedSocketClose = false;
     scheduleReconnect();
     void updateBadge();
   });
 
   socket.addEventListener("error", (error) => {
     console.error("[yetibrowser] MCP socket error", error);
+    if (!socketOpenedInCurrentAttempt) {
+      advanceFallbackPort();
+    }
   });
 }
 
 function reconnectWebSocket(): void {
   if (socket) {
+    expectedSocketClose = true;
     try {
       socket.close();
     } catch (error) {
@@ -168,6 +231,85 @@ function scheduleReconnect(): void {
     connectWebSocket();
   }, 2000);
 }
+
+function advanceFallbackPort(): void {
+  if (portMode !== "auto") {
+    return;
+  }
+  if (!isAutoPort(wsPort)) {
+    return;
+  }
+  if (fallbackAdvancedForCurrentAttempt) {
+    return;
+  }
+  const nextIndex = (fallbackPortIndex + 1) % FALLBACK_WS_PORTS.length;
+  if (nextIndex === fallbackPortIndex) {
+    return;
+  }
+  fallbackPortIndex = nextIndex;
+  const nextPort = FALLBACK_WS_PORTS[nextIndex];
+  if (nextPort !== wsPort) {
+    console.warn(`[yetibrowser] trying alternate websocket port ${nextPort}`);
+    wsPort = nextPort;
+  }
+  fallbackAdvancedForCurrentAttempt = true;
+}
+
+function updateFallbackIndex(port: number): void {
+  if (portMode === "auto" && isAutoPort(port)) {
+    fallbackPortIndex = FALLBACK_WS_PORTS.indexOf(port);
+  }
+}
+
+function isAutoPort(port: number): boolean {
+  return FALLBACK_WS_PORTS.includes(port);
+}
+
+async function persistWsPortIfNeeded(port: number): Promise<void> {
+  if (portMode !== "auto") {
+    return;
+  }
+  const stored = await chrome.storage.local.get(STORAGE_KEYS.wsPort);
+  if (stored[STORAGE_KEYS.wsPort] === port) {
+    return;
+  }
+  await chrome.storage.local.set({ [STORAGE_KEYS.wsPort]: port });
+}
+
+async function setPortConfiguration(mode: PortMode, port: number | undefined): Promise<void> {
+  if (mode === "manual") {
+    if (!isValidPort(port)) {
+      throw new Error("Port must be an integer between 1 and 65535");
+    }
+    portMode = "manual";
+    wsPort = port!;
+    fallbackPortIndex = 0;
+    fallbackAdvancedForCurrentAttempt = false;
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.wsPort]: wsPort,
+      [STORAGE_KEYS.wsPortMode]: portMode,
+    });
+    reconnectWebSocket();
+    return;
+  }
+
+  portMode = "auto";
+  if (!isAutoPort(wsPort)) {
+    wsPort = DEFAULT_WS_PORT;
+  }
+  updateFallbackIndex(wsPort);
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.wsPort]: wsPort,
+    [STORAGE_KEYS.wsPortMode]: portMode,
+  });
+  reconnectWebSocket();
+}
+
+function isValidPort(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535;
+}
+
+type PortMode = "auto" | "manual";
 
 function sendHello(): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) {

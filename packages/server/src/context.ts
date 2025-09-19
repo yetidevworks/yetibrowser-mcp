@@ -138,6 +138,14 @@ export class ExtensionContext {
       ],
     };
   }
+
+  getConnectionInfo(): ConnectionInfo {
+    return {
+      wsPort: this.bridge.getPort(),
+      connected: this.bridge.isConnected(),
+      extension: this.bridge.getHelloInfo(),
+    };
+  }
 }
 
 interface SnapshotRecord {
@@ -153,6 +161,12 @@ interface SnapshotDiff {
   added: DomSnapshotEntry[];
   removed: DomSnapshotEntry[];
   changed: Array<{ selector: string; before: DomSnapshotEntry; after: DomSnapshotEntry }>;
+}
+
+interface ConnectionInfo {
+  wsPort: number;
+  connected: boolean;
+  extension: { client: string; version?: string } | undefined;
 }
 
 function diffSnapshots(previous: DomSnapshot, current: DomSnapshot): SnapshotDiff {

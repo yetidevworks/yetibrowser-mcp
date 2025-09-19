@@ -9,6 +9,10 @@ var goToTabButton = document.getElementById("go-to-tab");
 var iconEl = document.getElementById("header-icon");
 var connectButton = document.getElementById("connect");
 var disconnectButton = document.getElementById("disconnect");
+var portModeSelect = document.getElementById("port-mode");
+var manualPortGroup = document.getElementById("port-manual-group");
+var portInput = document.getElementById("port-input");
+var applyPortButton = document.getElementById("apply-port");
 var lastError = null;
 connectButton.addEventListener("click", async () => {
   lastError = null;
@@ -37,6 +41,31 @@ disconnectButton.addEventListener("click", async () => {
     await refresh();
   }
 });
+portModeSelect.addEventListener("change", async () => {
+  const mode = portModeSelect.value === "manual" ? "manual" : "auto";
+  if (mode === "auto") {
+    manualPortGroup.hidden = true;
+    portInput.disabled = true;
+    applyPortButton.disabled = true;
+    portInput.value = "";
+    await applyPortConfiguration(mode);
+  } else {
+    manualPortGroup.hidden = false;
+    portInput.disabled = false;
+    applyPortButton.disabled = false;
+    portInput.focus();
+  }
+});
+applyPortButton.addEventListener("click", async () => {
+  const trimmed = portInput.value.trim();
+  const portValue = Number.parseInt(trimmed, 10);
+  if (!Number.isInteger(portValue) || portValue <= 0 || portValue > 65535) {
+    lastError = "Enter a port between 1 and 65535";
+    await refresh();
+    return;
+  }
+  await applyPortConfiguration("manual", portValue);
+});
 void refresh();
 async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
@@ -45,12 +74,17 @@ async function refresh() {
   updateUi(state, activeTab, connectedTab);
 }
 function updateUi(state, activeTab, connectedTab) {
-  const { tabId, socketConnected, wsPort } = state;
+  const { tabId, socketConnected, wsPort, portMode } = state;
   const activeTabId = activeTab?.id ?? null;
   const isConnectedToActive = tabId !== null && tabId === activeTabId;
   connectButton.disabled = !activeTabId || isConnectedToActive || !isUrlAllowed(activeTab?.url ?? "");
   disconnectButton.disabled = tabId === null;
   goToTabButton.disabled = tabId === null;
+  portModeSelect.value = portMode;
+  manualPortGroup.hidden = portMode !== "manual";
+  portInput.disabled = portMode !== "manual";
+  applyPortButton.disabled = portMode !== "manual";
+  portInput.value = portMode === "manual" ? String(wsPort) : "";
   if (tabId && connectedTab) {
     const suffix = isConnectedToActive ? " (current)" : "";
     connectedTabEl.textContent = `#${tabId}${suffix}`;
@@ -60,7 +94,8 @@ function updateUi(state, activeTab, connectedTab) {
     connectedTabEl.classList.add("error");
   }
   if (socketConnected) {
-    serverStatusEl.textContent = `ws://localhost:${wsPort}`;
+    const modeLabel = portMode === "auto" ? "auto" : "manual";
+    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
     serverStatusEl.classList.remove("error");
   } else {
     serverStatusEl.textContent = "No server found";
@@ -103,6 +138,23 @@ function updateUi(state, activeTab, connectedTab) {
 async function getActiveTab() {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   return tabs[0];
+}
+async function applyPortConfiguration(mode, port) {
+  lastError = null;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "yetibrowser/setPortConfig",
+      mode,
+      port
+    });
+    if (!response?.ok) {
+      throw new Error(response?.error ?? "Failed to update port configuration");
+    }
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  } finally {
+    await refresh();
+  }
 }
 goToTabButton.addEventListener("click", async () => {
   const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
