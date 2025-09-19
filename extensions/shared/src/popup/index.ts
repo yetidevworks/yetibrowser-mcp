@@ -88,11 +88,17 @@ async function refresh() {
 }
 
 function updateUi(
-  state: { tabId: number | null; socketConnected: boolean; wsPort: number; portMode: PortMode },
+  state: {
+    tabId: number | null;
+    socketConnected: boolean;
+    wsPort: number;
+    portMode: PortMode;
+    socketStatus?: SocketStatus;
+  },
   activeTab: chrome.tabs.Tab | undefined,
   connectedTab: chrome.tabs.Tab | undefined,
 ) {
-  const { tabId, socketConnected, wsPort, portMode } = state;
+  const { tabId, socketConnected, wsPort, portMode, socketStatus = "disconnected" } = state;
 
   const activeTabId = activeTab?.id ?? null;
   const isConnectedToActive = tabId !== null && tabId === activeTabId;
@@ -104,7 +110,8 @@ function updateUi(
   portModeSelect.value = portMode;
   manualPortGroup.hidden = portMode !== "manual";
   portInput.disabled = portMode !== "manual";
-  applyPortButton.disabled = portMode !== "manual";
+  const isConnectingSocket = socketStatus === "connecting";
+  applyPortButton.disabled = portMode !== "manual" || isConnectingSocket;
   portInput.value = portMode === "manual" ? String(wsPort) : "";
 
   if (tabId && connectedTab) {
@@ -116,12 +123,15 @@ function updateUi(
     connectedTabEl.classList.add("error");
   }
 
-  if (socketConnected) {
-    const modeLabel = portMode === "auto" ? "auto" : "manual";
+  const modeLabel = portMode === "auto" ? "auto" : "manual";
+  if (socketStatus === "connecting") {
+    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — connecting…`;
+    serverStatusEl.classList.add("error");
+  } else if (socketConnected) {
     serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
     serverStatusEl.classList.remove("error");
   } else {
-    serverStatusEl.textContent = "No server found";
+    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — not connected`;
     serverStatusEl.classList.add("error");
   }
 
@@ -129,6 +139,8 @@ function updateUi(
   if (lastError) {
     statusEl.textContent = lastError;
     statusEl.classList.add("error");
+  } else if (socketStatus === "connecting") {
+    statusEl.textContent = `Connecting to ws://localhost:${wsPort}…`;
   } else if (tabId && !isConnectedToActive) {
     statusEl.textContent = "We’ll interact with this tab even if another is focused.";
   } else {
@@ -182,6 +194,27 @@ async function applyPortConfiguration(mode: PortMode, port?: number): Promise<vo
     lastError = error instanceof Error ? error.message : String(error);
   } finally {
     await refresh();
+    await waitForSocketConnection();
+  }
+}
+
+async function waitForSocketConnection(maxWaitMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
+    const activeTab = await getActiveTab();
+    const connectedTab = state?.tabId
+      ? await chrome.tabs
+          .get(state.tabId)
+          .catch(() => undefined)
+      : undefined;
+    if (state) {
+      updateUi(state, activeTab, connectedTab);
+    }
+    if (state?.socketStatus === "open") {
+      return;
+    }
+    await delay(250);
   }
 }
 
@@ -216,10 +249,17 @@ function isUrlAllowed(url: string): boolean {
 }
 
 type PortMode = "auto" | "manual";
+type SocketStatus = "disconnected" | "connecting" | "open";
 
 function truncate(value: string, max = 40): string {
   if (value.length <= max) {
     return value;
   }
   return `${value.slice(0, max - 1)}…`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

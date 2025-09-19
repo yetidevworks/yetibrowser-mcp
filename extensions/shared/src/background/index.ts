@@ -34,6 +34,7 @@ let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
 let expectedSocketClose = false;
 let socketOpenedInCurrentAttempt = false;
 let fallbackAdvancedForCurrentAttempt = false;
+let socketStatus: SocketStatus = "disconnected";
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[yetibrowser] extension installed");
@@ -65,6 +66,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       wsPort,
       socketConnected: socket?.readyState === WebSocket.OPEN,
       portMode,
+      socketStatus,
     });
     return;
   }
@@ -156,11 +158,15 @@ function connectWebSocket(): void {
   expectedSocketClose = false;
   socketOpenedInCurrentAttempt = false;
   fallbackAdvancedForCurrentAttempt = false;
+  socketStatus = "connecting";
+  void updateBadge();
 
   try {
     socket = new WebSocket(`ws://localhost:${wsPort}`);
   } catch (error) {
     console.error("[yetibrowser] failed to create WebSocket", error);
+    socketStatus = "disconnected";
+    void updateBadge();
     advanceFallbackPort();
     scheduleReconnect();
     return;
@@ -173,6 +179,7 @@ function connectWebSocket(): void {
       reconnectTimeout = null;
     }
     socketOpenedInCurrentAttempt = true;
+    socketStatus = "open";
     persistWsPortIfNeeded(wsPort).catch((error) => {
       console.error("[yetibrowser] failed to persist websocket port", error);
     });
@@ -195,6 +202,7 @@ function connectWebSocket(): void {
       advanceFallbackPort();
     }
     expectedSocketClose = false;
+    socketStatus = "disconnected";
     scheduleReconnect();
     void updateBadge();
   });
@@ -203,6 +211,10 @@ function connectWebSocket(): void {
     console.error("[yetibrowser] MCP socket error", error);
     if (!socketOpenedInCurrentAttempt) {
       advanceFallbackPort();
+    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      socketStatus = "disconnected";
+      void updateBadge();
     }
   });
 }
@@ -218,6 +230,8 @@ function reconnectWebSocket(): void {
     socket = null;
   }
   stopKeepAlive();
+  socketStatus = "connecting";
+  void updateBadge();
   connectWebSocket();
 }
 
@@ -289,6 +303,8 @@ async function setPortConfiguration(mode: PortMode, port: number | undefined): P
       [STORAGE_KEYS.wsPort]: wsPort,
       [STORAGE_KEYS.wsPortMode]: portMode,
     });
+    socketStatus = "connecting";
+    void updateBadge();
     reconnectWebSocket();
     return;
   }
@@ -302,6 +318,8 @@ async function setPortConfiguration(mode: PortMode, port: number | undefined): P
     [STORAGE_KEYS.wsPort]: wsPort,
     [STORAGE_KEYS.wsPortMode]: portMode,
   });
+  socketStatus = "connecting";
+  void updateBadge();
   reconnectWebSocket();
 }
 
@@ -310,6 +328,7 @@ function isValidPort(value: number | undefined): value is number {
 }
 
 type PortMode = "auto" | "manual";
+type SocketStatus = "disconnected" | "connecting" | "open";
 
 function sendHello(): void {
   if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -1308,7 +1327,7 @@ async function ensurePageHelpers(tabId: number): Promise<void> {
 }
 
 async function updateBadge(): Promise<void> {
-  const isConnected = connectedTabId !== null && socket?.readyState === WebSocket.OPEN;
+  const isConnected = connectedTabId !== null && socketStatus === "open";
   try {
     const text = isConnected ? "●" : "";
     await chrome.action.setBadgeText({ text });

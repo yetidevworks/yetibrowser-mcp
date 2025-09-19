@@ -168,17 +168,18 @@
         gap: 6px;
       }
       .config-row {
-        display: flex;
-        align-items: center;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
         gap: 8px;
+        align-items: center;
+        width: 100%;
       }
       .config-row .config-input {
         width: 100%;
-        flex: 1;
       }
       .config-row .apply {
-        flex: 0 0 auto;
         padding: 6px 12px;
+        white-space: nowrap;
       }
       .hint {
         font-size: 12px;
