@@ -202,8 +202,9 @@ async function applyPortConfiguration(mode: PortMode, port?: number): Promise<vo
   }
 }
 
-async function waitForSocketConnection(maxWaitMs = 10000): Promise<void> {
+async function waitForSocketConnection(maxWaitMs = 5000): Promise<void> {
   const start = Date.now();
+  let checkCount = 0;
   while (Date.now() - start < maxWaitMs) {
     const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
     const activeTab = await getActiveTab();
@@ -218,7 +219,10 @@ async function waitForSocketConnection(maxWaitMs = 10000): Promise<void> {
     if (state?.socketConnected && state?.socketStatus === "open") {
       return;
     }
-    await delay(100);
+    // Start with very fast checks, gradually slow down
+    const delayMs = checkCount < 10 ? 50 : checkCount < 20 ? 100 : 200;
+    checkCount++;
+    await delay(delayMs);
   }
 }
 

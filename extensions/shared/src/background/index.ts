@@ -157,21 +157,32 @@ function connectWebSocket(): void {
     return;
   }
 
+  // Clear any pending reconnect since we're connecting now
+  if (reconnectTimeout !== null) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+
   expectedSocketClose = false;
   socketOpenedInCurrentAttempt = false;
   fallbackAdvancedForCurrentAttempt = false;
   socketStatus = "connecting";
   void updateBadge();
 
-  console.log(`[yetibrowser] Attempting to connect to port ${wsPort} (mode: ${portMode})`);
+  console.log(`[yetibrowser] Trying port ${wsPort} (mode: ${portMode})`);
   try {
     socket = new WebSocket(`ws://localhost:${wsPort}`);
   } catch (error) {
     console.error("[yetibrowser] failed to create WebSocket", error);
     socketStatus = "disconnected";
     void updateBadge();
-    advanceFallbackPort();
-    scheduleReconnect();
+    if (portMode === "auto") {
+      advanceFallbackPort();
+      // Try next port immediately
+      connectWebSocket();
+    } else {
+      scheduleReconnect();
+    }
     return;
   }
 
@@ -201,18 +212,28 @@ function connectWebSocket(): void {
     console.warn("[yetibrowser] MCP socket closed");
     socket = null;
     stopKeepAlive();
-    if (!expectedSocketClose && !socketOpenedInCurrentAttempt) {
-      advanceFallbackPort();
-    }
-    expectedSocketClose = false;
     socketStatus = "disconnected";
-    scheduleReconnect();
     void updateBadge();
+
+    if (expectedSocketClose) {
+      expectedSocketClose = false;
+      return; // Don't reconnect if we closed intentionally
+    }
+
+    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
+      advanceFallbackPort();
+      // Immediately try next port in auto mode
+      queueMicrotask(() => connectWebSocket());
+    } else {
+      // Immediate reconnect for manual mode or if port was working
+      queueMicrotask(() => connectWebSocket());
+    }
   });
 
   socket.addEventListener("error", (error) => {
     console.error("[yetibrowser] MCP socket error", error);
-    if (!socketOpenedInCurrentAttempt) {
+    // Error event is always followed by close event, so we don't need to handle reconnection here
+    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
       advanceFallbackPort();
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -239,7 +260,8 @@ function reconnectWebSocket(): void {
   }
   socketStatus = "connecting";
   void updateBadge();
-  connectWebSocket();
+  // Use queueMicrotask for instant reconnection
+  queueMicrotask(() => connectWebSocket());
 }
 
 function scheduleReconnect(): void {
@@ -247,10 +269,11 @@ function scheduleReconnect(): void {
     return;
   }
 
+  // Minimal delay - just enough to avoid blocking the event loop
   reconnectTimeout = setTimeout(() => {
     reconnectTimeout = null;
     connectWebSocket();
-  }, 500);
+  }, 10);
 }
 
 function advanceFallbackPort(): void {
@@ -263,10 +286,8 @@ function advanceFallbackPort(): void {
   const nextIndex = (fallbackPortIndex + 1) % FALLBACK_WS_PORTS.length;
   fallbackPortIndex = nextIndex;
   const nextPort = FALLBACK_WS_PORTS[nextIndex];
-  if (nextPort !== wsPort) {
-    console.warn(`[yetibrowser] trying alternate websocket port ${nextPort}`);
-    wsPort = nextPort;
-  }
+  console.log(`[yetibrowser] Port ${wsPort} failed, trying port ${nextPort}`);
+  wsPort = nextPort;
   fallbackAdvancedForCurrentAttempt = true;
 }
 
@@ -300,28 +321,47 @@ async function setPortConfiguration(mode: PortMode, port: number | undefined): P
     wsPort = port!;
     fallbackPortIndex = 0;
     fallbackAdvancedForCurrentAttempt = false;
-    await chrome.storage.local.set({
+    // Don't await storage, do it async for speed
+    chrome.storage.local.set({
       [STORAGE_KEYS.wsPort]: wsPort,
       [STORAGE_KEYS.wsPortMode]: portMode,
     });
     socketStatus = "connecting";
     void updateBadge();
-    reconnectWebSocket();
+    // Close and reconnect immediately
+    if (socket) {
+      expectedSocketClose = true;
+      socket.close();
+      socket = null;
+    }
+    queueMicrotask(() => connectWebSocket());
     return;
   }
 
+  // Reset everything for auto mode to start fresh from 9010
   portMode = "auto";
-  wsPort = DEFAULT_WS_PORT;
+  wsPort = FALLBACK_WS_PORTS[0]; // Always start from first port (9010)
   fallbackPortIndex = 0;
   fallbackAdvancedForCurrentAttempt = false;
-  console.log("[yetibrowser] Switching to auto mode, resetting to port", wsPort);
-  await chrome.storage.local.set({
+  console.log("[yetibrowser] Switching to auto mode, starting from port", wsPort);
+  // Don't await storage, do it async for speed
+  chrome.storage.local.set({
     [STORAGE_KEYS.wsPort]: wsPort,
     [STORAGE_KEYS.wsPortMode]: portMode,
   });
   socketStatus = "connecting";
   void updateBadge();
-  reconnectWebSocket();
+  // Close existing connection and start fresh
+  if (socket) {
+    expectedSocketClose = true;
+    try {
+      socket.close();
+    } catch (error) {
+      console.error("[yetibrowser] failed to close socket", error);
+    }
+    socket = null;
+  }
+  queueMicrotask(() => connectWebSocket());
 }
 
 function isValidPort(value: number | undefined): value is number {

@@ -166,8 +166,9 @@ async function applyPortConfiguration(mode, port) {
     await refresh();
   }
 }
-async function waitForSocketConnection(maxWaitMs = 1e4) {
+async function waitForSocketConnection(maxWaitMs = 5e3) {
   const start = Date.now();
+  let checkCount = 0;
   while (Date.now() - start < maxWaitMs) {
     const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
     const activeTab = await getActiveTab();
@@ -178,7 +179,9 @@ async function waitForSocketConnection(maxWaitMs = 1e4) {
     if (state?.socketConnected && state?.socketStatus === "open") {
       return;
     }
-    await delay(100);
+    const delayMs = checkCount < 10 ? 50 : checkCount < 20 ? 100 : 200;
+    checkCount++;
+    await delay(delayMs);
   }
 }
 goToTabButton.addEventListener("click", async () => {
