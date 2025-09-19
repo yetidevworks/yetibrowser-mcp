@@ -10,8 +10,10 @@ const connectButton = document.getElementById("connect") as HTMLButtonElement;
 const disconnectButton = document.getElementById("disconnect") as HTMLButtonElement;
 const portModeSelect = document.getElementById("port-mode") as HTMLSelectElement;
 const manualPortGroup = document.getElementById("port-manual-group") as HTMLDivElement;
-const portInput = document.getElementById("port-input") as HTMLInputElement;
+const portSelect = document.getElementById("port-select") as HTMLSelectElement;
 const applyPortButton = document.getElementById("apply-port") as HTMLButtonElement;
+const applyTextEl = document.getElementById("apply-text") as HTMLSpanElement;
+const applySpinnerEl = document.getElementById("apply-spinner") as HTMLSpanElement;
 
 let lastError: string | null = null;
 
@@ -50,23 +52,21 @@ portModeSelect.addEventListener("change", async () => {
   const mode = portModeSelect.value === "manual" ? "manual" : "auto";
   if (mode === "auto") {
     manualPortGroup.hidden = true;
-    portInput.disabled = true;
+    portSelect.disabled = true;
     applyPortButton.disabled = true;
-    portInput.value = "";
     await applyPortConfiguration(mode);
   } else {
     manualPortGroup.hidden = false;
-    portInput.disabled = false;
+    portSelect.disabled = false;
     applyPortButton.disabled = false;
-    portInput.focus();
+    portSelect.focus();
   }
 });
 
 applyPortButton.addEventListener("click", async () => {
-  const trimmed = portInput.value.trim();
-  const portValue = Number.parseInt(trimmed, 10);
+  const portValue = Number.parseInt(portSelect.value, 10);
   if (!Number.isInteger(portValue) || portValue <= 0 || portValue > 65535) {
-    lastError = "Enter a port between 1 and 65535";
+    lastError = "Invalid port selected";
     await refresh();
     return;
   }
@@ -109,10 +109,10 @@ function updateUi(
 
   portModeSelect.value = portMode;
   manualPortGroup.hidden = portMode !== "manual";
-  portInput.disabled = portMode !== "manual";
+  portSelect.disabled = portMode !== "manual";
   const isConnectingSocket = socketStatus === "connecting";
-  applyPortButton.disabled = portMode !== "manual" || isConnectingSocket;
-  portInput.value = portMode === "manual" ? String(wsPort) : "";
+  applyPortButton.disabled = portMode !== "manual";
+  portSelect.value = String(wsPort);
 
   if (tabId && connectedTab) {
     const suffix = isConnectedToActive ? " (current)" : "";
@@ -181,6 +181,7 @@ async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
 
 async function applyPortConfiguration(mode: PortMode, port?: number): Promise<void> {
   lastError = null;
+  showSpinner(true);
   try {
     const response = await chrome.runtime.sendMessage({
       type: "yetibrowser/setPortConfig",
@@ -190,15 +191,16 @@ async function applyPortConfiguration(mode: PortMode, port?: number): Promise<vo
     if (!response?.ok) {
       throw new Error(response?.error ?? "Failed to update port configuration");
     }
+    await waitForSocketConnection();
   } catch (error) {
     lastError = error instanceof Error ? error.message : String(error);
   } finally {
+    showSpinner(false);
     await refresh();
-    await waitForSocketConnection();
   }
 }
 
-async function waitForSocketConnection(maxWaitMs = 5000): Promise<void> {
+async function waitForSocketConnection(maxWaitMs = 10000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
@@ -211,10 +213,10 @@ async function waitForSocketConnection(maxWaitMs = 5000): Promise<void> {
     if (state) {
       updateUi(state, activeTab, connectedTab);
     }
-    if (state?.socketStatus === "open") {
+    if (state?.socketConnected && state?.socketStatus === "open") {
       return;
     }
-    await delay(250);
+    await delay(100);
   }
 }
 
@@ -262,4 +264,16 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+}
+
+function showSpinner(show: boolean): void {
+  if (show) {
+    applyTextEl.hidden = true;
+    applySpinnerEl.hidden = false;
+    applyPortButton.disabled = true;
+  } else {
+    applyTextEl.hidden = false;
+    applySpinnerEl.hidden = true;
+    applyPortButton.disabled = false;
+  }
 }

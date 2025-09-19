@@ -66,25 +66,12 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 
 ### Troubleshooting
 
-- The CLI automatically tries the range `9010-9020` if the default WebSocket port is busy, and the extension follows suit. Watch the log for `switched to` messages to see which port was picked.
-- If you prefer a specific port outside that range, pass `--ws-port <port>`; the extension will stick to that exact number.
-- The extension popup lets you toggle between automatic rotation and a manual WebSocket port. Choose “Manual port”, enter the value, and click Apply. Switch back to “Automatic” to return to the 9010-9020 pool.
+- The CLI walks ports `9010-9020` until it finds a free one, logging `switched to` when it advances. Pass `--ws-port <port>` if you want to pin a specific port instead.
+- The extension popup mirrors that behaviour: leave it on “Automatic” to track the CLI’s port, or choose “Manual” and enter the port reported by `browser_connection_info` / the CLI log to override it.
 
 ### Sharing one MCP server across multiple clients
 
-You can expose a Streamable HTTP endpoint for clients that prefer HTTP transport, but the MCP SDK currently limits each endpoint to a single active session. If a second client asks to initialize, it will receive `Server already initialized` until the first session ends (or you restart the server).
-
-Run the CLI manually if you want an HTTP endpoint:
-
-```bash
-npx yetibrowser-mcp --ws-port 9010 
-```
-
-- The extension still connects via WebSocket.
-- Point your MCP client at `http://127.0.0.1:9400/mcp`.
-- When you’re done, close the client so the session releases; otherwise restart the CLI before another client connects.
-
-For concurrent IDE sessions, launch separate CLI instances—port rotation keeps them from colliding.
+Launch one CLI per IDE session; each instance will choose a free port automatically. Use the popup or `browser_connection_info` to check which port it picked, and only set the extension to Manual if you need to force a specific value.
 
 ## Documentation & build scripts
 

@@ -126,60 +126,59 @@
         gap: 10px;
         font-size: 13px;
       }
-      .config-label {
-        opacity: 0.7;
-        display: block;
-        margin-bottom: 4px;
+      .config-row-horizontal {
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
-      .config-select,
-      .config-input {
-        width: 100%;
-        padding: 6px 10px;
+      .config-label-inline {
+        opacity: 0.7;
+        min-width: 80px;
+      }
+      .config-select-inline {
+        flex: 1;
+        height: 32px;
+        padding: 0 10px;
         border-radius: 6px;
         border: 1px solid rgba(255, 255, 255, 0.16);
         background: rgba(4, 6, 12, 0.4);
         color: inherit;
         font: inherit;
+        display: flex;
+        align-items: center;
       }
-      .config-select:focus,
-      .config-input:focus {
+      .config-select-inline:focus {
         outline: 2px solid rgba(96, 165, 250, 0.65);
         outline-offset: 1px;
       }
-      .config-select:disabled,
-      .config-input:disabled {
+      .config-select-inline:disabled {
         opacity: 0.6;
         cursor: not-allowed;
-      }
-      .config-input::placeholder {
-        color: rgba(255, 255, 255, 0.35);
-      }
-      .config-input {
-        -moz-appearance: textfield;
-      }
-      .config-input::-webkit-outer-spin-button,
-      .config-input::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
       }
       .config-manual {
         display: flex;
         flex-direction: column;
-        gap: 6px;
       }
-      .config-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto;
-        gap: 8px;
-        align-items: center;
-        width: 100%;
-      }
-      .config-row .config-input {
-        width: 100%;
-      }
-      .config-row .apply {
-        padding: 6px 12px;
+      .apply {
+        height: 32px;
+        padding: 0 16px;
         white-space: nowrap;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 70px;
+        justify-content: center;
+      }
+      .spinner {
+        width: 12px;
+        height: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        border-top-color: rgba(255, 255, 255, 0.8);
+        border-radius: 50%;
+        animation: spin 0.6s linear infinite;
+      }
+      @keyframes spin {
+        to { transform: rotate(360deg); }
       }
       .hint {
         font-size: 12px;
@@ -212,23 +211,33 @@
       <div><span class="label">Server</span><span class="value error" id="server-status">No server found</span></div>
     </dl>
     <div class="config" id="port-config">
-      <label for="port-mode" class="config-label">Connection mode</label>
-      <select id="port-mode" class="config-select">
-        <option value="auto">Automatic (ports 9010-9020)</option>
-        <option value="manual">Manual port</option>
-      </select>
+      <div class="config-row-horizontal">
+        <label for="port-mode" class="config-label-inline">Connection</label>
+        <select id="port-mode" class="config-select-inline">
+          <option value="auto">Automatic</option>
+          <option value="manual">Manual</option>
+        </select>
+      </div>
       <div class="config-manual" id="port-manual-group" hidden>
-        <label for="port-input" class="config-label">WebSocket port</label>
-        <div class="config-row">
-          <input
-            id="port-input"
-            type="text"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            placeholder="9010"
-            class="config-input"
-          />
-          <button id="apply-port" class="secondary apply">Apply</button>
+        <div class="config-row-horizontal">
+          <label for="port-select" class="config-label-inline">Port</label>
+          <select id="port-select" class="config-select-inline">
+            <option value="9010">9010</option>
+            <option value="9011">9011</option>
+            <option value="9012">9012</option>
+            <option value="9013">9013</option>
+            <option value="9014">9014</option>
+            <option value="9015">9015</option>
+            <option value="9016">9016</option>
+            <option value="9017">9017</option>
+            <option value="9018">9018</option>
+            <option value="9019">9019</option>
+            <option value="9020">9020</option>
+          </select>
+          <button id="apply-port" class="secondary apply">
+            <span id="apply-text">Apply</span>
+            <span id="apply-spinner" class="spinner" hidden></span>
+          </button>
         </div>
       </div>
     </div>
