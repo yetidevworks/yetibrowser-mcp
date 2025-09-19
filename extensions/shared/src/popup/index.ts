@@ -15,6 +15,8 @@ const applyPortButton = document.getElementById("apply-port") as HTMLButtonEleme
 const applyTextEl = document.getElementById("apply-text") as HTMLSpanElement;
 const applySpinnerEl = document.getElementById("apply-spinner") as HTMLSpanElement;
 
+console.log("YetiBrowser popup loaded - NEW VERSION WITH PORT SELECT", { portSelect, applyTextEl, applySpinnerEl });
+
 let lastError: string | null = null;
 
 connectButton.addEventListener("click", async () => {

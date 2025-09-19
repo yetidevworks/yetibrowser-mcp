@@ -15,6 +15,7 @@ var portSelect = document.getElementById("port-select");
 var applyPortButton = document.getElementById("apply-port");
 var applyTextEl = document.getElementById("apply-text");
 var applySpinnerEl = document.getElementById("apply-spinner");
+console.log("YetiBrowser popup loaded - NEW VERSION WITH PORT SELECT", { portSelect, applyTextEl, applySpinnerEl });
 var lastError = null;
 connectButton.addEventListener("click", async () => {
   lastError = null;

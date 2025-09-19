@@ -132,6 +132,7 @@ function connectWebSocket() {
   fallbackAdvancedForCurrentAttempt = false;
   socketStatus = "connecting";
   void updateBadge();
+  console.log(`[yetibrowser] Attempting to connect to port ${wsPort} (mode: ${portMode})`);
   try {
     socket = new WebSocket(`ws://localhost:${wsPort}`);
   } catch (error) {
@@ -269,6 +270,7 @@ async function setPortConfiguration(mode, port) {
   wsPort = DEFAULT_WS_PORT;
   fallbackPortIndex = 0;
   fallbackAdvancedForCurrentAttempt = false;
+  console.log("[yetibrowser] Switching to auto mode, resetting to port", wsPort);
   await chrome.storage.local.set({
     [STORAGE_KEYS.wsPort]: wsPort,
     [STORAGE_KEYS.wsPortMode]: portMode

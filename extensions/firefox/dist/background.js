@@ -92,7 +92,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
     portMode = parsed;
     if (portMode === "auto") {
-      updateFallbackIndex(wsPort);
+      wsPort = DEFAULT_WS_PORT;
+      fallbackPortIndex = 0;
+      fallbackAdvancedForCurrentAttempt = false;
     }
     console.log("[yetibrowser] websocket port mode changed", portMode);
     reconnectWebSocket();
@@ -194,6 +196,10 @@ function reconnectWebSocket() {
     socket = null;
   }
   stopKeepAlive();
+  if (reconnectTimeout !== null) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
   socketStatus = "connecting";
   void updateBadge();
   connectWebSocket();
@@ -205,22 +211,16 @@ function scheduleReconnect() {
   reconnectTimeout = setTimeout(() => {
     reconnectTimeout = null;
     connectWebSocket();
-  }, 2e3);
+  }, 500);
 }
 function advanceFallbackPort() {
   if (portMode !== "auto") {
-    return;
-  }
-  if (!isAutoPort(wsPort)) {
     return;
   }
   if (fallbackAdvancedForCurrentAttempt) {
     return;
   }
   const nextIndex = (fallbackPortIndex + 1) % FALLBACK_WS_PORTS.length;
-  if (nextIndex === fallbackPortIndex) {
-    return;
-  }
   fallbackPortIndex = nextIndex;
   const nextPort = FALLBACK_WS_PORTS[nextIndex];
   if (nextPort !== wsPort) {
@@ -266,10 +266,9 @@ async function setPortConfiguration(mode, port) {
     return;
   }
   portMode = "auto";
-  if (!isAutoPort(wsPort)) {
-    wsPort = DEFAULT_WS_PORT;
-  }
-  updateFallbackIndex(wsPort);
+  wsPort = DEFAULT_WS_PORT;
+  fallbackPortIndex = 0;
+  fallbackAdvancedForCurrentAttempt = false;
   await chrome.storage.local.set({
     [STORAGE_KEYS.wsPort]: wsPort,
     [STORAGE_KEYS.wsPortMode]: portMode

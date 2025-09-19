@@ -159,6 +159,9 @@
         display: flex;
         flex-direction: column;
       }
+      .config-manual[hidden] {
+        display: none !important;
+      }
       .apply {
         height: 32px;
         padding: 0 16px;
@@ -168,6 +171,17 @@
         gap: 6px;
         min-width: 70px;
         justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: transparent;
+        color: inherit;
+        border-radius: 6px;
+        cursor: pointer;
+        font: inherit;
+        font-size: 14px;
+      }
+      .apply:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
       .spinner {
         width: 12px;
