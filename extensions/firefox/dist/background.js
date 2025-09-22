@@ -127,19 +127,28 @@ function connectWebSocket() {
   if (socket && socket.readyState === WebSocket.CONNECTING) {
     return;
   }
+  if (reconnectTimeout !== null) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
   expectedSocketClose = false;
   socketOpenedInCurrentAttempt = false;
   fallbackAdvancedForCurrentAttempt = false;
   socketStatus = "connecting";
   void updateBadge();
+  console.log(`[yetibrowser] Trying port ${wsPort} (mode: ${portMode})`);
   try {
     socket = new WebSocket(`ws://localhost:${wsPort}`);
   } catch (error) {
     console.error("[yetibrowser] failed to create WebSocket", error);
     socketStatus = "disconnected";
     void updateBadge();
-    advanceFallbackPort();
-    scheduleReconnect();
+    if (portMode === "auto") {
+      advanceFallbackPort();
+      connectWebSocket();
+    } else {
+      scheduleReconnect();
+    }
     return;
   }
   socket.addEventListener("open", () => {
@@ -166,17 +175,22 @@ function connectWebSocket() {
     console.warn("[yetibrowser] MCP socket closed");
     socket = null;
     stopKeepAlive();
-    if (!expectedSocketClose && !socketOpenedInCurrentAttempt) {
-      advanceFallbackPort();
-    }
-    expectedSocketClose = false;
     socketStatus = "disconnected";
-    scheduleReconnect();
     void updateBadge();
+    if (expectedSocketClose) {
+      expectedSocketClose = false;
+      return;
+    }
+    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
+      advanceFallbackPort();
+      queueMicrotask(() => connectWebSocket());
+    } else {
+      queueMicrotask(() => connectWebSocket());
+    }
   });
   socket.addEventListener("error", (error) => {
     console.error("[yetibrowser] MCP socket error", error);
-    if (!socketOpenedInCurrentAttempt) {
+    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
       advanceFallbackPort();
     }
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -202,7 +216,7 @@ function reconnectWebSocket() {
   }
   socketStatus = "connecting";
   void updateBadge();
-  connectWebSocket();
+  queueMicrotask(() => connectWebSocket());
 }
 function scheduleReconnect() {
   if (reconnectTimeout !== null) {
@@ -211,7 +225,7 @@ function scheduleReconnect() {
   reconnectTimeout = setTimeout(() => {
     reconnectTimeout = null;
     connectWebSocket();
-  }, 500);
+  }, 10);
 }
 function advanceFallbackPort() {
   if (portMode !== "auto") {
@@ -223,10 +237,8 @@ function advanceFallbackPort() {
   const nextIndex = (fallbackPortIndex + 1) % FALLBACK_WS_PORTS.length;
   fallbackPortIndex = nextIndex;
   const nextPort = FALLBACK_WS_PORTS[nextIndex];
-  if (nextPort !== wsPort) {
-    console.warn(`[yetibrowser] trying alternate websocket port ${nextPort}`);
-    wsPort = nextPort;
-  }
+  console.log(`[yetibrowser] Port ${wsPort} failed, trying port ${nextPort}`);
+  wsPort = nextPort;
   fallbackAdvancedForCurrentAttempt = true;
 }
 function updateFallbackIndex(port) {
@@ -256,26 +268,41 @@ async function setPortConfiguration(mode, port) {
     wsPort = port;
     fallbackPortIndex = 0;
     fallbackAdvancedForCurrentAttempt = false;
-    await chrome.storage.local.set({
+    chrome.storage.local.set({
       [STORAGE_KEYS.wsPort]: wsPort,
       [STORAGE_KEYS.wsPortMode]: portMode
     });
     socketStatus = "connecting";
     void updateBadge();
-    reconnectWebSocket();
+    if (socket) {
+      expectedSocketClose = true;
+      socket.close();
+      socket = null;
+    }
+    queueMicrotask(() => connectWebSocket());
     return;
   }
   portMode = "auto";
-  wsPort = DEFAULT_WS_PORT;
+  wsPort = FALLBACK_WS_PORTS[0];
   fallbackPortIndex = 0;
   fallbackAdvancedForCurrentAttempt = false;
-  await chrome.storage.local.set({
+  console.log("[yetibrowser] Switching to auto mode, starting from port", wsPort);
+  chrome.storage.local.set({
     [STORAGE_KEYS.wsPort]: wsPort,
     [STORAGE_KEYS.wsPortMode]: portMode
   });
   socketStatus = "connecting";
   void updateBadge();
-  reconnectWebSocket();
+  if (socket) {
+    expectedSocketClose = true;
+    try {
+      socket.close();
+    } catch (error) {
+      console.error("[yetibrowser] failed to close socket", error);
+    }
+    socket = null;
+  }
+  queueMicrotask(() => connectWebSocket());
 }
 function isValidPort(value) {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 65535;
