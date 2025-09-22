@@ -36,6 +36,17 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 - `browser_page_state` – dump forms, storage keys, and cookies for the connected page
 - `browser_connection_info` – report bridge WebSocket port, connection status, and extension version
 
+## MCP Browser Extension Installation
+
+### Chrome Browser
+
+- Install the latest Chrome Browser Extension here: https://chromewebstore.google.com/detail/hpedknkjljpopinabjjmljgckhlancni?utm_source=item-share-cb
+- Leave it on **Automatic** connection mode unless you are running multiple instances of YetiBrowser MCP Server
+
+### Firefox Browser (not currently available)
+
+- Due to the limited capabilities of Manifest v3 in Firefox stable release, the Firefox extension is on hold until full support is commonly avaialble (outside of Nightly builds).
+
 ## MCP Server Installation
 
 ### Codex CLI
