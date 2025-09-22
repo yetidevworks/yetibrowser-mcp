@@ -44,19 +44,20 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
   ```toml
   [mcp_servers.yetibrowser-mcp]
   command = "npx"
-  args = ["yetibrowser-mcp", "--ws-port", "9010"]
+  args = ["yetibrowser-mcp"]
   ```
 - Restart `codex` CLI command; you should see `yetibrowser-mcp` listing under `/mcp` tools.
+- If you want to provide a specific port, use this format for the args entry: `args = ["yetibrowser-mcp", "--ws-port", "9010"]`
 
 ### Claude Code
 
-- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx yetibrowser-mcp --ws-port 9010` (or run the locally built CLI).
+- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx yetibrowser-mcp` (or run the locally built CLI).
 - Add the server entry to `~/Library/Application Support/Claude/claude_desktop_config.json` (see the example in [`docs/publishing.md`](docs/publishing.md)).
 - Restart `claude` so it picks up the new MCP server; you should see `yetibrowser-mcp` listed under the `/mcp` tools menu once the extension connects.
 
 ### Other MCP-aware clients
 
-- Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp --ws-port 9010`) and pointing it at the Chrome extension port.
+- Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp`) and or optionally provide a specific port, e.g. `npx yetibrowser-mcp --ws-port 9010`.
 - The server exposes the standard MCP transport over stdio, so use whatever configuration mechanism your client supports to run the command above when a tab is connected.
 
 ### MCP Inspector
@@ -67,11 +68,7 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 ### Troubleshooting
 
 - The CLI walks ports `9010-9020` until it finds a free one, logging `switched to` when it advances. Pass `--ws-port <port>` if you want to pin a specific port instead.
-- The extension popup mirrors that behaviour: leave it on “Automatic” to track the CLI’s port, or choose “Manual” and enter the port reported by `browser_connection_info` / the CLI log to override it.
-
-### Sharing one MCP server across multiple clients
-
-Launch one CLI per IDE session; each instance will choose a free port automatically. Use the popup or `browser_connection_info` to check which port it picked, and only set the extension to Manual if you need to force a specific value.
+- The Browser extension popup mirrors that behaviour: leave it on “Automatic” to track the CLI’s port, or choose “Manual” and enter the port reported by `browser_connection_info` / the CLI log to override it.
 
 ## Documentation & build scripts
 
