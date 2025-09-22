@@ -80,6 +80,7 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 
 - The CLI walks ports `9010-9020` until it finds a free one, logging `switched to` when it advances. Pass `--ws-port <port>` if you want to pin a specific port instead.
 - The Browser extension popup mirrors that behaviour: leave it on “Automatic” to track the CLI’s port, or choose “Manual” and enter the port reported by `browser_connection_info` / the CLI log to override it.
+- Simply ask your AI tool about the connection port.  For example: `what is the yetibrowser mcp connction info?`, then set the manual port the port reported.
 
 ## Documentation & build scripts
 
