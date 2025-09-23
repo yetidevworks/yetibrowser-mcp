@@ -1,6 +1,8 @@
 declare const statusEl: HTMLDivElement;
 declare const connectedTabEl: HTMLElement;
 declare const serverStatusEl: HTMLElement;
+declare const serverStatusTextEl: HTMLElement;
+declare const serverSpinnerEl: HTMLSpanElement;
 declare const tabInfoContainer: HTMLDivElement;
 declare const nameEl: HTMLSpanElement;
 declare const urlEl: HTMLAnchorElement;
@@ -9,9 +11,12 @@ declare const iconEl: HTMLImageElement;
 declare const connectButton: HTMLButtonElement;
 declare const disconnectButton: HTMLButtonElement;
 declare const portModeSelect: HTMLSelectElement;
+declare const reconnectButton: HTMLButtonElement;
 declare const manualPortGroup: HTMLDivElement;
-declare const portInput: HTMLInputElement;
+declare const portSelect: HTMLSelectElement;
 declare const applyPortButton: HTMLButtonElement;
+declare const applyTextEl: HTMLSpanElement;
+declare const applySpinnerEl: HTMLSpanElement;
 declare let lastError: string | null;
 declare function refresh(): Promise<void>;
 declare function updateUi(state: {
@@ -29,3 +34,4 @@ type PortMode = "auto" | "manual";
 type SocketStatus = "disconnected" | "connecting" | "open";
 declare function truncate(value: string, max?: number): string;
 declare function delay(ms: number): Promise<void>;
+declare function showSpinner(show: boolean): void;

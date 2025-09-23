@@ -162,7 +162,8 @@
       .config-manual[hidden] {
         display: none !important;
       }
-      .apply {
+      .inline-button {
+        width: auto;
         margin: 0;
         height: 32px;
         padding: 0 16px;
@@ -170,7 +171,6 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        min-width: 70px;
         justify-content: center;
         border: 1px solid rgba(255, 255, 255, 0.2);
         background: transparent;
@@ -180,9 +180,41 @@
         font: inherit;
         font-size: 14px;
       }
-      .apply:disabled {
+      .inline-button:disabled {
         opacity: 0.5;
         cursor: not-allowed;
+      }
+      .apply {
+        min-width: 70px;
+      }
+      .icon-button {
+        padding: 0 10px;
+        min-width: 32px;
+      }
+      .icon-button svg {
+        width: 16px;
+        height: 16px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      .status-with-spinner {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .status-spinner {
+        width: 10px;
+        height: 10px;
+        border-width: 2px;
       }
       .spinner {
         width: 12px;
@@ -223,7 +255,13 @@
     <dl class="meta">
       <div><span class="label">Connected tab</span><span class="value" id="connected-tab">None</span></div>
       <div><span class="label">Status</span><span class="value status error" id="status">Not connected</span></div>
-      <div><span class="label">Server</span><span class="value error" id="server-status">No server found</span></div>
+      <div>
+        <span class="label">Server</span>
+        <span class="value error status-with-spinner" id="server-status">
+          <span id="server-spinner" class="spinner status-spinner" hidden></span>
+          <span id="server-status-text">No server found</span>
+        </span>
+      </div>
     </dl>
     <div class="config" id="port-config">
       <div class="config-row-horizontal">
@@ -232,6 +270,33 @@
           <option value="auto">Automatic</option>
           <option value="manual">Manual</option>
         </select>
+        <button
+          id="reconnect"
+          class="secondary inline-button icon-button"
+          type="button"
+          aria-label="Reconnect"
+          title="Reconnect"
+        >
+          <span class="sr-only">Reconnect</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="24"
+            height="24"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="icon icon-tabler icons-tabler-outline icon-tabler-reload"
+          >
+            <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+            <path
+              d="M19.933 13.041a8 8 0 1 1 -9.925 -8.788c3.899 -1 7.935 1.007 9.425 4.747"
+            />
+            <path d="M20 4v5h-5" />
+          </svg>
+        </button>
       </div>
       <div class="config-manual" id="port-manual-group" hidden>
         <div class="config-row-horizontal">
@@ -249,7 +314,7 @@
             <option value="9019">9019</option>
             <option value="9020">9020</option>
           </select>
-          <button id="apply-port" class="secondary apply">
+          <button id="apply-port" class="secondary inline-button apply">
             <span id="apply-text">Apply</span>
             <span id="apply-spinner" class="spinner" hidden></span>
           </button>

@@ -1,6 +1,8 @@
 const statusEl = document.getElementById("status") as HTMLDivElement;
 const connectedTabEl = document.getElementById("connected-tab") as HTMLElement;
 const serverStatusEl = document.getElementById("server-status") as HTMLElement;
+const serverStatusTextEl = document.getElementById("server-status-text") as HTMLElement;
+const serverSpinnerEl = document.getElementById("server-spinner") as HTMLSpanElement;
 const tabInfoContainer = document.getElementById("tab-info") as HTMLDivElement;
 const nameEl = document.getElementById("tab-name") as HTMLSpanElement;
 const urlEl = document.getElementById("tab-url") as HTMLAnchorElement;
@@ -9,6 +11,7 @@ const iconEl = document.getElementById("header-icon") as HTMLImageElement;
 const connectButton = document.getElementById("connect") as HTMLButtonElement;
 const disconnectButton = document.getElementById("disconnect") as HTMLButtonElement;
 const portModeSelect = document.getElementById("port-mode") as HTMLSelectElement;
+const reconnectButton = document.getElementById("reconnect") as HTMLButtonElement;
 const manualPortGroup = document.getElementById("port-manual-group") as HTMLDivElement;
 const portSelect = document.getElementById("port-select") as HTMLSelectElement;
 const applyPortButton = document.getElementById("apply-port") as HTMLButtonElement;
@@ -75,6 +78,23 @@ applyPortButton.addEventListener("click", async () => {
   await applyPortConfiguration("manual", portValue);
 });
 
+reconnectButton.addEventListener("click", async () => {
+  lastError = null;
+  reconnectButton.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "yetibrowser/reconnect" });
+    if (!response?.ok) {
+      throw new Error(response?.error ?? "Failed to reconnect");
+    }
+    await waitForSocketConnection();
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  } finally {
+    await refresh();
+    reconnectButton.disabled = false;
+  }
+});
+
 void refresh();
 
 async function refresh() {
@@ -112,7 +132,6 @@ function updateUi(
   portModeSelect.value = portMode;
   manualPortGroup.hidden = portMode !== "manual";
   portSelect.disabled = portMode !== "manual";
-  const isConnectingSocket = socketStatus === "connecting";
   applyPortButton.disabled = portMode !== "manual";
   portSelect.value = String(wsPort);
 
@@ -127,14 +146,17 @@ function updateUi(
 
   const modeLabel = portMode === "auto" ? "auto" : "manual";
   if (socketStatus === "connecting") {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — connecting…`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — connecting…`;
     serverStatusEl.classList.add("error");
+    serverSpinnerEl.hidden = false;
   } else if (socketConnected) {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
     serverStatusEl.classList.remove("error");
+    serverSpinnerEl.hidden = true;
   } else {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — not connected`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — not connected`;
     serverStatusEl.classList.add("error");
+    serverSpinnerEl.hidden = true;
   }
 
   statusEl.classList.remove("error");
@@ -142,7 +164,7 @@ function updateUi(
     statusEl.textContent = lastError;
     statusEl.classList.add("error");
   } else if (socketStatus === "connecting") {
-    statusEl.textContent = `Connecting to ws://localhost:${wsPort}…`;
+    statusEl.textContent = "Scanning for an MCP server…";
   } else if (tabId && !isConnectedToActive) {
     statusEl.textContent = "We’ll interact with this tab even if another is focused.";
   } else {
@@ -277,9 +299,11 @@ function showSpinner(show: boolean): void {
     applyTextEl.hidden = true;
     applySpinnerEl.hidden = false;
     applyPortButton.disabled = true;
+    reconnectButton.disabled = true;
   } else {
     applyTextEl.hidden = false;
     applySpinnerEl.hidden = true;
     applyPortButton.disabled = false;
+    reconnectButton.disabled = false;
   }
 }

@@ -2,6 +2,8 @@
 var statusEl = document.getElementById("status");
 var connectedTabEl = document.getElementById("connected-tab");
 var serverStatusEl = document.getElementById("server-status");
+var serverStatusTextEl = document.getElementById("server-status-text");
+var serverSpinnerEl = document.getElementById("server-spinner");
 var tabInfoContainer = document.getElementById("tab-info");
 var nameEl = document.getElementById("tab-name");
 var urlEl = document.getElementById("tab-url");
@@ -10,6 +12,7 @@ var iconEl = document.getElementById("header-icon");
 var connectButton = document.getElementById("connect");
 var disconnectButton = document.getElementById("disconnect");
 var portModeSelect = document.getElementById("port-mode");
+var reconnectButton = document.getElementById("reconnect");
 var manualPortGroup = document.getElementById("port-manual-group");
 var portSelect = document.getElementById("port-select");
 var applyPortButton = document.getElementById("apply-port");
@@ -67,6 +70,22 @@ applyPortButton.addEventListener("click", async () => {
   }
   await applyPortConfiguration("manual", portValue);
 });
+reconnectButton.addEventListener("click", async () => {
+  lastError = null;
+  reconnectButton.disabled = true;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: "yetibrowser/reconnect" });
+    if (!response?.ok) {
+      throw new Error(response?.error ?? "Failed to reconnect");
+    }
+    await waitForSocketConnection();
+  } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  } finally {
+    await refresh();
+    reconnectButton.disabled = false;
+  }
+});
 void refresh();
 async function refresh() {
   const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
@@ -84,7 +103,6 @@ function updateUi(state, activeTab, connectedTab) {
   portModeSelect.value = portMode;
   manualPortGroup.hidden = portMode !== "manual";
   portSelect.disabled = portMode !== "manual";
-  const isConnectingSocket = socketStatus === "connecting";
   applyPortButton.disabled = portMode !== "manual";
   portSelect.value = String(wsPort);
   if (tabId && connectedTab) {
@@ -97,21 +115,24 @@ function updateUi(state, activeTab, connectedTab) {
   }
   const modeLabel = portMode === "auto" ? "auto" : "manual";
   if (socketStatus === "connecting") {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) \u2014 connecting\u2026`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) \u2014 connecting\u2026`;
     serverStatusEl.classList.add("error");
+    serverSpinnerEl.hidden = false;
   } else if (socketConnected) {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
     serverStatusEl.classList.remove("error");
+    serverSpinnerEl.hidden = true;
   } else {
-    serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) \u2014 not connected`;
+    serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) \u2014 not connected`;
     serverStatusEl.classList.add("error");
+    serverSpinnerEl.hidden = true;
   }
   statusEl.classList.remove("error");
   if (lastError) {
     statusEl.textContent = lastError;
     statusEl.classList.add("error");
   } else if (socketStatus === "connecting") {
-    statusEl.textContent = `Connecting to ws://localhost:${wsPort}\u2026`;
+    statusEl.textContent = "Scanning for an MCP server\u2026";
   } else if (tabId && !isConnectedToActive) {
     statusEl.textContent = "We\u2019ll interact with this tab even if another is focused.";
   } else {
@@ -228,10 +249,12 @@ function showSpinner(show) {
     applyTextEl.hidden = true;
     applySpinnerEl.hidden = false;
     applyPortButton.disabled = true;
+    reconnectButton.disabled = true;
   } else {
     applyTextEl.hidden = false;
     applySpinnerEl.hidden = true;
     applyPortButton.disabled = false;
+    reconnectButton.disabled = false;
   }
 }
 //# sourceMappingURL=popup.js.map

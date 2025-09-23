@@ -2,6 +2,8 @@
 const statusEl = document.getElementById("status");
 const connectedTabEl = document.getElementById("connected-tab");
 const serverStatusEl = document.getElementById("server-status");
+const serverStatusTextEl = document.getElementById("server-status-text");
+const serverSpinnerEl = document.getElementById("server-spinner");
 const tabInfoContainer = document.getElementById("tab-info");
 const nameEl = document.getElementById("tab-name");
 const urlEl = document.getElementById("tab-url");
@@ -10,9 +12,13 @@ const iconEl = document.getElementById("header-icon");
 const connectButton = document.getElementById("connect");
 const disconnectButton = document.getElementById("disconnect");
 const portModeSelect = document.getElementById("port-mode");
+const reconnectButton = document.getElementById("reconnect");
 const manualPortGroup = document.getElementById("port-manual-group");
-const portInput = document.getElementById("port-input");
+const portSelect = document.getElementById("port-select");
 const applyPortButton = document.getElementById("apply-port");
+const applyTextEl = document.getElementById("apply-text");
+const applySpinnerEl = document.getElementById("apply-spinner");
+console.log("YetiBrowser popup loaded - NEW VERSION WITH PORT SELECT", { portSelect, applyTextEl, applySpinnerEl });
 let lastError = null;
 connectButton.addEventListener("click", async () => {
     lastError = null;
@@ -49,27 +55,43 @@ portModeSelect.addEventListener("change", async () => {
     const mode = portModeSelect.value === "manual" ? "manual" : "auto";
     if (mode === "auto") {
         manualPortGroup.hidden = true;
-        portInput.disabled = true;
+        portSelect.disabled = true;
         applyPortButton.disabled = true;
-        portInput.value = "";
         await applyPortConfiguration(mode);
     }
     else {
         manualPortGroup.hidden = false;
-        portInput.disabled = false;
+        portSelect.disabled = false;
         applyPortButton.disabled = false;
-        portInput.focus();
+        portSelect.focus();
     }
 });
 applyPortButton.addEventListener("click", async () => {
-    const trimmed = portInput.value.trim();
-    const portValue = Number.parseInt(trimmed, 10);
+    const portValue = Number.parseInt(portSelect.value, 10);
     if (!Number.isInteger(portValue) || portValue <= 0 || portValue > 65535) {
-        lastError = "Enter a port between 1 and 65535";
+        lastError = "Invalid port selected";
         await refresh();
         return;
     }
     await applyPortConfiguration("manual", portValue);
+});
+reconnectButton.addEventListener("click", async () => {
+    lastError = null;
+    reconnectButton.disabled = true;
+    try {
+        const response = await chrome.runtime.sendMessage({ type: "yetibrowser/reconnect" });
+        if (!response?.ok) {
+            throw new Error(response?.error ?? "Failed to reconnect");
+        }
+        await waitForSocketConnection();
+    }
+    catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+    }
+    finally {
+        await refresh();
+        reconnectButton.disabled = false;
+    }
 });
 void refresh();
 async function refresh() {
@@ -91,10 +113,9 @@ function updateUi(state, activeTab, connectedTab) {
     goToTabButton.disabled = tabId === null;
     portModeSelect.value = portMode;
     manualPortGroup.hidden = portMode !== "manual";
-    portInput.disabled = portMode !== "manual";
-    const isConnectingSocket = socketStatus === "connecting";
-    applyPortButton.disabled = portMode !== "manual" || isConnectingSocket;
-    portInput.value = portMode === "manual" ? String(wsPort) : "";
+    portSelect.disabled = portMode !== "manual";
+    applyPortButton.disabled = portMode !== "manual";
+    portSelect.value = String(wsPort);
     if (tabId && connectedTab) {
         const suffix = isConnectedToActive ? " (current)" : "";
         connectedTabEl.textContent = `#${tabId}${suffix}`;
@@ -106,16 +127,19 @@ function updateUi(state, activeTab, connectedTab) {
     }
     const modeLabel = portMode === "auto" ? "auto" : "manual";
     if (socketStatus === "connecting") {
-        serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — connecting…`;
+        serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — connecting…`;
         serverStatusEl.classList.add("error");
+        serverSpinnerEl.hidden = false;
     }
     else if (socketConnected) {
-        serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
+        serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel})`;
         serverStatusEl.classList.remove("error");
+        serverSpinnerEl.hidden = true;
     }
     else {
-        serverStatusEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — not connected`;
+        serverStatusTextEl.textContent = `ws://localhost:${wsPort} (${modeLabel}) — not connected`;
         serverStatusEl.classList.add("error");
+        serverSpinnerEl.hidden = true;
     }
     statusEl.classList.remove("error");
     if (lastError) {
@@ -123,7 +147,7 @@ function updateUi(state, activeTab, connectedTab) {
         statusEl.classList.add("error");
     }
     else if (socketStatus === "connecting") {
-        statusEl.textContent = `Connecting to ws://localhost:${wsPort}…`;
+        statusEl.textContent = "Scanning for an MCP server…";
     }
     else if (tabId && !isConnectedToActive) {
         statusEl.textContent = "We’ll interact with this tab even if another is focused.";
@@ -164,6 +188,7 @@ async function getActiveTab() {
 }
 async function applyPortConfiguration(mode, port) {
     lastError = null;
+    showSpinner(true);
     try {
         const response = await chrome.runtime.sendMessage({
             type: "yetibrowser/setPortConfig",
@@ -173,17 +198,19 @@ async function applyPortConfiguration(mode, port) {
         if (!response?.ok) {
             throw new Error(response?.error ?? "Failed to update port configuration");
         }
+        await waitForSocketConnection();
     }
     catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
     }
     finally {
+        showSpinner(false);
         await refresh();
-        await waitForSocketConnection();
     }
 }
 async function waitForSocketConnection(maxWaitMs = 5000) {
     const start = Date.now();
+    let checkCount = 0;
     while (Date.now() - start < maxWaitMs) {
         const state = await chrome.runtime.sendMessage({ type: "yetibrowser/getState" });
         const activeTab = await getActiveTab();
@@ -195,10 +222,13 @@ async function waitForSocketConnection(maxWaitMs = 5000) {
         if (state) {
             updateUi(state, activeTab, connectedTab);
         }
-        if (state?.socketStatus === "open") {
+        if (state?.socketConnected && state?.socketStatus === "open") {
             return;
         }
-        await delay(250);
+        // Start with very fast checks, gradually slow down
+        const delayMs = checkCount < 10 ? 50 : checkCount < 20 ? 100 : 200;
+        checkCount++;
+        await delay(delayMs);
     }
 }
 goToTabButton.addEventListener("click", async () => {
@@ -240,4 +270,18 @@ function delay(ms) {
     return new Promise((resolve) => {
         setTimeout(resolve, ms);
     });
+}
+function showSpinner(show) {
+    if (show) {
+        applyTextEl.hidden = true;
+        applySpinnerEl.hidden = false;
+        applyPortButton.disabled = true;
+        reconnectButton.disabled = true;
+    }
+    else {
+        applyTextEl.hidden = false;
+        applySpinnerEl.hidden = true;
+        applyPortButton.disabled = false;
+        reconnectButton.disabled = false;
+    }
 }
