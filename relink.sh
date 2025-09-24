@@ -1,4 +1,5 @@
 #!/bin/sh
+# Local testing via NPM link
 cd packages/shared
 npm link
 cd ../server

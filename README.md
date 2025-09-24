@@ -68,7 +68,7 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 
 ### Other MCP-aware clients
 
-- Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp`) and or optionally provide a specific port, e.g. `npx yetibrowser-mcp --ws-port 9010`.
+- Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp`) or optionally provide a specific port, e.g. `npx yetibrowser-mcp --ws-port 9010`.
 - The server exposes the standard MCP transport over stdio, so use whatever configuration mechanism your client supports to run the command above when a tab is connected.
 
 ### MCP Inspector
