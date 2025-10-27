@@ -66,6 +66,20 @@ export interface CommandPayloadMap {
   screenshot: { fullPage?: boolean };
   getConsoleLogs: EmptyPayload;
   pageState: EmptyPayload;
+  waitFor: { selector: string; timeoutMs?: number; visible?: boolean };
+  fillForm: {
+    fields: Array<{
+      selector: string;
+      value?: string | number | boolean | null;
+      values?: string[];
+      submit?: boolean;
+      description?: string;
+      type?: "auto" | "text" | "textarea" | "select" | "checkbox" | "radio" | "contentEditable";
+    }>;
+  };
+  evaluate: { script: string; args?: unknown[]; timeoutMs?: number };
+  handleDialog: { action: "accept" | "dismiss"; promptText?: string };
+  drag: { fromSelector: string; toSelector: string; steps?: number; description?: string };
 }
 
 export interface CommandResultMap {
@@ -85,6 +99,11 @@ export interface CommandResultMap {
   screenshot: { data: string; mimeType: string };
   getConsoleLogs: ConsoleLogEntry[];
   pageState: PageStateSnapshot;
+  waitFor: { ok: true };
+  fillForm: { filled: number; attempted: number; errors: string[] };
+  evaluate: { value: unknown };
+  handleDialog: { ok: true };
+  drag: { ok: true };
 }
 
 export type CommandName = keyof CommandPayloadMap;
@@ -141,6 +160,11 @@ export const TOOL_NAMES = {
   SCREENSHOT: "browser_screenshot",
   CONSOLE_LOGS: "browser_get_console_logs",
   PAGE_STATE: "browser_page_state",
+  WAIT_FOR: "browser_wait_for",
+  FILL_FORM: "browser_fill_form",
+  EVALUATE: "browser_evaluate",
+  HANDLE_DIALOG: "browser_handle_dialog",
+  DRAG: "browser_drag",
 } as const;
 
 export type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];

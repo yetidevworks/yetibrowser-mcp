@@ -67,6 +67,110 @@ const ScreenshotSchema = z.object({
     .describe("Whether to capture the full page instead of the visible viewport"),
 });
 
+const WaitForSelectorSchema = z.object({
+  selector: z
+    .string()
+    .min(1)
+    .describe("CSS selector to wait for"),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(120_000)
+    .optional()
+    .describe("Optional timeout in milliseconds. Defaults to 5000ms."),
+  visible: z
+    .boolean()
+    .optional()
+    .describe("When true, wait until the element is visible (non-zero size and not hidden)"),
+});
+
+const FormFieldValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+const FormFieldSchema = z
+  .object({
+    selector: z
+      .string()
+      .min(1)
+      .describe("CSS selector for the form control to update"),
+    value: FormFieldValueSchema.optional().describe("Value to apply to the field (string/number/boolean)"),
+    values: z
+      .array(z.string())
+      .nonempty()
+      .optional()
+      .describe("List of values to select for multi-select inputs"),
+    submit: z
+      .boolean()
+      .optional()
+      .describe("Submit the containing form after setting this field"),
+    description: z
+      .string()
+      .optional()
+      .describe("Optional description to help debugging errors"),
+    type: z
+      .enum(["auto", "text", "textarea", "select", "checkbox", "radio", "contentEditable"])
+      .optional()
+      .describe("Override automatic element detection"),
+  })
+  .refine((data) => typeof data.value !== "undefined" || data.values, {
+    message: "Provide either a value or values for each form field",
+    path: ["value"],
+  });
+
+const FillFormSchema = z.object({
+  fields: z.array(FormFieldSchema).min(1),
+});
+
+const EvaluateSchema = z.object({
+  script: z
+    .string()
+    .min(1)
+    .describe("JavaScript function expression to execute in the page context, e.g. `(el) => el.textContent`"),
+  args: z
+    .array(z.any())
+    .optional()
+    .describe("Optional array of arguments passed to the function"),
+  timeoutMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(120_000)
+    .optional()
+    .describe("Optional timeout in milliseconds. Defaults to no timeout."),
+});
+
+const HandleDialogSchema = z.object({
+  action: z
+    .enum(["accept", "dismiss"])
+    .describe("Whether to accept or dismiss the active JavaScript dialog"),
+  promptText: z
+    .string()
+    .optional()
+    .describe("Optional text to enter into prompt dialogs before accepting"),
+});
+
+const DragSchema = z.object({
+  fromSelector: z
+    .string()
+    .min(1)
+    .describe("CSS selector for the element to start the drag from"),
+  toSelector: z
+    .string()
+    .min(1)
+    .describe("CSS selector for the element to drop onto"),
+  steps: z
+    .number()
+    .int()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Optional number of intermediate drag steps. Defaults to 12."),
+  description: z
+    .string()
+    .optional()
+    .describe("Optional human-readable description of the drag target"),
+});
+
 function noInputSchema() {
   return zodToJsonSchema(z.object({}));
 }
@@ -143,6 +247,33 @@ export function createTools(): Tool[] {
     },
   };
 
+  const waitForTool: Tool = {
+    schema: {
+      name: "browser_wait_for",
+      description:
+        "Wait until a selector appears (optionally visible) before continuing. Returns a fresh snapshot after the element is detected.",
+      inputSchema: zodToJsonSchema(WaitForSelectorSchema),
+    },
+    handle: async (context, params) => {
+      const { selector, timeoutMs, visible } = WaitForSelectorSchema.parse(params);
+      await context.call("waitFor", { selector, timeoutMs, visible });
+      const parts = [
+        `Waited for selector "${selector}".`,
+        visible ? "Required element to be visible." : undefined,
+        typeof timeoutMs === "number" ? `Timeout: ${timeoutMs}ms.` : undefined,
+      ].filter(Boolean);
+      parts.push('Call `browser_snapshot` if you need a refreshed DOM listing.');
+      return {
+        content: [
+          {
+            type: "text",
+            text: parts.join(" "),
+          },
+        ],
+      };
+    },
+  };
+
   const pressKeyTool: Tool = {
     schema: {
       name: "browser_press_key",
@@ -193,6 +324,35 @@ export function createTools(): Tool[] {
     },
   };
 
+  const dragTool: Tool = {
+    schema: {
+      name: "browser_drag",
+      description:
+        "Drag an element (like cards in a kanban board) onto a target element. Useful for sortable UIs.",
+      inputSchema: zodToJsonSchema(DragSchema),
+    },
+    handle: async (context, params) => {
+      const { fromSelector, toSelector, steps, description } = DragSchema.parse(params);
+      await context.call("drag", { fromSelector, toSelector, steps, description });
+      const summary = [
+        `Dragged "${fromSelector}" onto "${toSelector}".`,
+        typeof steps === "number" ? `Steps: ${steps}.` : undefined,
+        description ? `Context: ${description}.` : undefined,
+        'Run `browser_snapshot` if you need a DOM snapshot after the drag.',
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return {
+        content: [
+          {
+            type: "text",
+            text: summary,
+          },
+        ],
+      };
+    },
+  };
+
   const typeTool: Tool = {
     schema: {
       name: "browser_type",
@@ -205,6 +365,34 @@ export function createTools(): Tool[] {
       return context.captureSnapshot(
         `Typed "${text}" into "${description ?? selector}"`,
       );
+    },
+  };
+
+  const fillFormTool: Tool = {
+    schema: {
+      name: "browser_fill_form",
+      description:
+        "Fill multiple form fields in a single call. Supports inputs, textareas, selects, checkboxes, and radios.",
+      inputSchema: zodToJsonSchema(FillFormSchema),
+    },
+    handle: async (context, params) => {
+      const { fields } = FillFormSchema.parse(params);
+      const result = await context.call("fillForm", { fields });
+      const summaryLines = [
+        `Filled ${result.filled}/${result.attempted} fields.`,
+        result.errors.length
+          ? `Issues:\n${result.errors.map((err) => `- ${err}`).join("\n")}`
+          : "No validation errors reported.",
+        'Call `browser_snapshot` if you need to inspect the page state after filling.',
+      ];
+      return {
+        content: [
+          {
+            type: "text",
+            text: summaryLines.join("\n"),
+          },
+        ],
+      };
     },
   };
 
@@ -305,6 +493,61 @@ export function createTools(): Tool[] {
     },
   };
 
+  const evaluateTool: Tool = {
+    schema: {
+      name: "browser_evaluate",
+      description:
+        "Run custom JavaScript inside the page context and return the JSON-serializable result.",
+      inputSchema: zodToJsonSchema(EvaluateSchema),
+    },
+    handle: async (context, params) => {
+      const { script, args, timeoutMs } = EvaluateSchema.parse(params);
+      const { value } = await context.call("evaluate", { script, args, timeoutMs });
+      let formatted: string;
+      try {
+        formatted = JSON.stringify(value, null, 2);
+      } catch (error) {
+        formatted = String(value);
+      }
+      const MAX_OUTPUT = 4_000;
+      if (formatted.length > MAX_OUTPUT) {
+        formatted = `${formatted.slice(0, MAX_OUTPUT)}… (truncated)`;
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Evaluation result:\n\`\`\`json\n${formatted}\n\`\`\``,
+          },
+        ],
+      };
+    },
+  };
+
+  const handleDialogTool: Tool = {
+    schema: {
+      name: "browser_handle_dialog",
+      description:
+        "Accept or dismiss the currently open alert/confirm/prompt dialog in the active tab.",
+      inputSchema: zodToJsonSchema(HandleDialogSchema),
+    },
+    handle: async (context, params) => {
+      const { action, promptText } = HandleDialogSchema.parse(params);
+      await context.call("handleDialog", { action, promptText });
+      const summary = `Dialog ${action === "accept" ? "accepted" : "dismissed"}${
+        promptText ? ` with prompt text "${promptText}"` : ""
+      }.`;
+      return {
+        content: [
+          {
+            type: "text",
+            text: summary,
+          },
+        ],
+      };
+    },
+  };
+
   const connectionInfoTool: Tool = {
     schema: {
       name: "browser_connection_info",
@@ -340,14 +583,19 @@ export function createTools(): Tool[] {
     buildSnapshotTool("browser_go_back", "Go back to the previous page", "goBack"),
     buildSnapshotTool("browser_go_forward", "Go forward to the next page", "goForward"),
     waitTool,
+    waitForTool,
     pressKeyTool,
     clickTool,
     hoverTool,
+    dragTool,
     typeTool,
+    fillFormTool,
     selectOptionTool,
     screenshotTool,
     consoleLogsTool,
     pageStateTool,
+    evaluateTool,
+    handleDialogTool,
     connectionInfoTool,
   ];
 }

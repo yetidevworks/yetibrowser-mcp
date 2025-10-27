@@ -26,15 +26,20 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
 - `browser_navigate` – load a new URL in the connected tab and return an updated snapshot
 - `browser_go_back` / `browser_go_forward` – move through history while keeping MCP in sync
 - `browser_wait` – pause automation for a set number of seconds
+- `browser_wait_for` – block until a selector appears (optionally visible) before proceeding
 - `browser_press_key` – simulate a keyboard key press on the focused element
 - `browser_click` – click the element identified by a CSS selector
 - `browser_hover` – hover the pointer over the targeted element
+- `browser_drag` – drag an element onto a drop target for sortable/drag-and-drop UIs
 - `browser_type` – type text (optionally submitting with Enter) into an editable element
+- `browser_fill_form` – fill multiple inputs/selects/checkboxes/radios in a single call
 - `browser_select_option` – choose one or more options in a `<select>` element
 - `browser_screenshot` – capture a viewport or full-page screenshot via the DevTools protocol
 - `browser_get_console_logs` – return recent console output, including errors with stack traces
 - `browser_page_state` – dump forms, storage keys, and cookies for the connected page
 - `browser_connection_info` – report bridge WebSocket port, connection status, and extension version
+- `browser_evaluate` – run custom JavaScript inside the page and return JSON-serializable results
+- `browser_handle_dialog` – accept or dismiss `alert`/`confirm`/`prompt` dialogs with optional prompt text
 
 ## MCP Browser Extension Installation
 

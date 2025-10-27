@@ -23,27 +23,443 @@ const DEFAULT_PORT_MODE = "auto" satisfies PortMode;
 const FALLBACK_WS_PORTS = [
   9010, 9011, 9012, 9013, 9014, 9015, 9016, 9017, 9018, 9019, 9020,
 ];
-const AUTO_FAST_SCAN_WINDOW_MS = 30_000;
-const AUTO_SLOW_RETRY_DELAY_MS = 5_000;
-const AUTO_FAST_RETRY_DELAY_MS = 50;
-const AUTO_CONNECT_ATTEMPT_TIMEOUT_MS = 1_000;
+
+globalThis.addEventListener(
+  "error",
+  (event) => {
+    const message = typeof event.message === "string" ? event.message : "";
+    if (message.includes("Error in connection establishment: net::ERR_CONNECTION_REFUSED")) {
+      event.preventDefault();
+      if ("stopImmediatePropagation" in event && typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+    }
+  },
+  { capture: true },
+);
+
+globalThis.onerror = (message) => {
+  if (typeof message === "string" && message.includes("Error in connection establishment: net::ERR_CONNECTION_REFUSED")) {
+    return true;
+  }
+  return false;
+};
+
+const originalConsoleError = console.error.bind(console);
+console.error = (...args: unknown[]) => {
+  const first = args[0];
+  if (typeof first === "string" && first.includes("WebSocket connection to 'ws://localhost:") && first.includes("Error in connection establishment: net::ERR_CONNECTION_REFUSED")) {
+    return;
+  }
+  originalConsoleError(...args);
+};
+const CONNECT_ATTEMPT_TIMEOUT_MS = 1_000;
+const AUTO_SCAN_FAST_DELAY_MS = 100;
+const AUTO_SCAN_SLOW_DELAY_MS = 750;
+const AUTO_RECOVERY_DELAY_MS = 250;
+const MANUAL_RETRY_BASE_DELAY_MS = 250;
+const MANUAL_RETRY_MAX_DELAY_MS = 3_000;
+const FAILURE_RESET_WINDOW_MS = 10_000;
 
 let connectedTabId: number | null = null;
 let wsPort = DEFAULT_WS_PORT;
 let portMode: PortMode = DEFAULT_PORT_MODE;
-let fallbackPortIndex = 0;
 let socket: WebSocket | null = null;
-let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
-let expectedSocketClose = false;
-let socketOpenedInCurrentAttempt = false;
-let fallbackAdvancedForCurrentAttempt = false;
-let fallbackWrappedInCurrentAttempt = false;
 let socketStatus: SocketStatus = "disconnected";
-let autoScanStartedAt = 0;
-let activeAttemptToken = 0;
-let attemptTimeout: ReturnType<typeof setTimeout> | null = null;
-let reconnectPlannedAfterClose = false;
+let keepAliveTimer: ReturnType<typeof setInterval> | null = null;
+
+function setSocketStatus(status: SocketStatus): void {
+  if (socketStatus !== status) {
+    socketStatus = status;
+    void updateBadge();
+  }
+}
+
+class WebSocketConnectionManager {
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private attemptTimer: ReturnType<typeof setTimeout> | null = null;
+  private attemptId = 0;
+  private expectingClose = false;
+  private running = false;
+  private nextAutoIndex = 0;
+  private pendingInitialAutoPort: number | null = null;
+  private lastSuccessfulPort: number | null = null;
+  private preferLastSuccessful = false;
+  private manualPort = DEFAULT_WS_PORT;
+  private failurePort: number | null = null;
+  private failureCount = 0;
+  private lastFailureAt = 0;
+  private scanIterations = 0;
+  private activeSocket: WebSocket | null = null;
+
+  initialize(mode: PortMode, port: number): void {
+    if (mode === "manual") {
+      this.manualPort = isValidPort(port) ? port : DEFAULT_WS_PORT;
+      this.pendingInitialAutoPort = null;
+    } else {
+      this.manualPort = DEFAULT_WS_PORT;
+      this.resetAutoSequence(port);
+    }
+    this.resetFailureCounters();
+    this.lastSuccessfulPort = mode === "auto" && isAutoPort(port) ? port : null;
+    this.preferLastSuccessful = false;
+  }
+
+  start(): void {
+    if (this.running) {
+      return;
+    }
+    this.running = true;
+    setSocketStatus("connecting");
+    this.scheduleReconnect(0, { reason: "startup", preferLastSuccessful: portMode === "auto" });
+  }
+
+  setManualMode(port: number, options: { fromStorage?: boolean } = {}): void {
+    this.manualPort = port;
+    this.resetFailureCounters();
+    this.preferLastSuccessful = false;
+    this.pendingInitialAutoPort = null;
+    this.lastSuccessfulPort = null;
+    if (!options.fromStorage) {
+      chrome.storage.local.set({
+        [STORAGE_KEYS.wsPort]: port,
+        [STORAGE_KEYS.wsPortMode]: "manual",
+      });
+    }
+    this.triggerReconnect({ immediate: true, reason: "manual" });
+  }
+
+  setAutoMode(startPort: number, options: { fromStorage?: boolean } = {}): void {
+    const target = isAutoPort(startPort) ? startPort : DEFAULT_WS_PORT;
+    this.resetAutoSequence(target);
+    this.resetFailureCounters();
+    this.preferLastSuccessful = false;
+    if (!options.fromStorage) {
+      chrome.storage.local.set({
+        [STORAGE_KEYS.wsPort]: target,
+        [STORAGE_KEYS.wsPortMode]: "auto",
+      });
+    }
+    this.triggerReconnect({ immediate: true, reason: "auto", resetAuto: true });
+  }
+
+  updateManualPortFromStorage(port: number, options: { scheduleReconnect: boolean }): void {
+    this.manualPort = port;
+    this.resetFailureCounters();
+    if (options.scheduleReconnect) {
+      this.triggerReconnect({ immediate: true, reason: "storage-manual" });
+    }
+  }
+
+  updateAutoPortFromStorage(port: number, options: { scheduleReconnect: boolean }): void {
+    if (!isAutoPort(port)) {
+      return;
+    }
+    this.resetAutoSequence(port);
+    this.resetFailureCounters();
+    if (options.scheduleReconnect) {
+      this.triggerReconnect({ immediate: true, reason: "storage-auto", resetAuto: true });
+    }
+  }
+
+  triggerReconnect(options: {
+    immediate?: boolean;
+    reason?: string;
+    resetAuto?: boolean;
+    preferLastSuccessful?: boolean;
+  } = {}): void {
+    if (!this.running) {
+      this.start();
+    }
+
+    if (options.resetAuto && portMode === "auto") {
+      this.resetAutoSequence(wsPort);
+    }
+    if (options.preferLastSuccessful !== undefined) {
+      this.preferLastSuccessful = options.preferLastSuccessful;
+    }
+
+    setSocketStatus("connecting");
+    this.teardownActiveSocket();
+    const delay = options.immediate ? 0 : this.computeDelay();
+    this.scheduleReconnect(delay, {
+      reason: options.reason,
+      preferLastSuccessful: this.preferLastSuccessful,
+    });
+  }
+
+  private scheduleReconnect(
+    delayMs: number,
+    options: { reason?: string; resetAuto?: boolean; preferLastSuccessful?: boolean } = {},
+  ): void {
+    if (!this.running) {
+      return;
+    }
+
+    if (options.resetAuto && portMode === "auto") {
+      this.resetAutoSequence(wsPort);
+    }
+    if (options.preferLastSuccessful !== undefined) {
+      this.preferLastSuccessful = options.preferLastSuccessful;
+    }
+
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.beginConnection();
+    }, Math.max(0, delayMs));
+  }
+
+  private beginConnection(): void {
+    if (!this.running) {
+      return;
+    }
+
+    const attemptToken = ++this.attemptId;
+    const port = this.selectNextPort();
+    wsPort = port;
+
+    setSocketStatus("connecting");
+    console.log(`[yetibrowser] connecting to ws://localhost:${port} (mode: ${portMode})`);
+
+    let candidate: WebSocket;
+    try {
+      candidate = new WebSocket(`ws://localhost:${port}`);
+    } catch (error) {
+      console.error("[yetibrowser] failed to create WebSocket", error);
+      this.handleEarlyFailure(port);
+      this.scheduleReconnect(this.computeDelay(), { reason: "constructor-failed" });
+      return;
+    }
+
+    this.registerAttemptTimeout(attemptToken, candidate, port);
+
+    candidate.addEventListener("open", () => this.handleOpen(attemptToken, candidate, port));
+    candidate.addEventListener("message", (event) => this.handleMessage(attemptToken, candidate, event.data));
+    candidate.addEventListener("close", (event) => this.handleClose(attemptToken, candidate, port, event));
+    candidate.addEventListener("error", (event) => {
+      if (typeof event.preventDefault === "function") {
+        event.preventDefault();
+      }
+      if ("stopImmediatePropagation" in event && typeof event.stopImmediatePropagation === "function") {
+        event.stopImmediatePropagation();
+      }
+      this.handleError(attemptToken, candidate, port, event);
+    });
+  }
+
+  private handleOpen(token: number, candidate: WebSocket, port: number): void {
+    if (this.attemptId !== token) {
+      return;
+    }
+
+    this.expectingClose = false;
+    this.clearAttemptTimer();
+    this.attachSocket(candidate);
+    this.lastSuccessfulPort = port;
+    this.preferLastSuccessful = true;
+    this.scanIterations = 0;
+    this.resetFailureCounters();
+
+    if (portMode === "auto") {
+      this.pendingInitialAutoPort = null;
+    }
+
+    setSocketStatus("open");
+
+    persistWsPortIfNeeded(port).catch((error) => {
+      console.error("[yetibrowser] failed to persist websocket port", error);
+    });
+    sendHello(candidate);
+    startKeepAlive();
+  }
+
+  private handleMessage(token: number, candidate: WebSocket, data: unknown): void {
+    if (this.attemptId !== token || this.activeSocket !== candidate) {
+      return;
+    }
+
+    handleSocketMessage(data).catch((error) => {
+      console.error("[yetibrowser] failed to handle message", error);
+    });
+  }
+
+  private handleClose(token: number, candidate: WebSocket, port: number, event: CloseEvent): void {
+    if (this.attemptId !== token) {
+      return;
+    }
+
+    this.clearAttemptTimer();
+
+    const wasActive = this.activeSocket === candidate;
+    if (wasActive) {
+      console.warn(
+        "[yetibrowser] MCP socket closed",
+        JSON.stringify({ code: event.code, reason: event.reason, wasClean: event.wasClean }),
+      );
+      this.detachSocket();
+    }
+
+    const intentional = this.expectingClose;
+    this.expectingClose = false;
+
+    if (intentional) {
+      return;
+    }
+
+    this.recordFailure(port);
+    setSocketStatus("connecting");
+    const preferLast = wasActive && portMode === "auto";
+    this.scheduleReconnect(this.computeDelay(), { reason: "close", preferLastSuccessful: preferLast });
+  }
+
+  private handleError(token: number, candidate: WebSocket, port: number, event: Event): void {
+    if (this.attemptId !== token) {
+      return;
+    }
+
+    this.recordFailure(port);
+
+    if (this.activeSocket === candidate) {
+      console.debug("[yetibrowser] socket error", {
+        port,
+        readyState: candidate.readyState,
+        type: event.type,
+      });
+    }
+  }
+
+  private handleEarlyFailure(port: number): void {
+    this.recordFailure(port);
+    this.preferLastSuccessful = false;
+  }
+
+  private registerAttemptTimeout(token: number, candidate: WebSocket, port: number): void {
+    this.clearAttemptTimer();
+    this.attemptTimer = setTimeout(() => {
+      if (this.attemptId !== token) {
+        return;
+      }
+      if (candidate.readyState !== WebSocket.CONNECTING) {
+        return;
+      }
+      console.warn(`[yetibrowser] connection attempt on port ${port} timed out`);
+      try {
+        candidate.close();
+      } catch (error) {
+        console.error("[yetibrowser] failed to close timed-out socket", error);
+      }
+    }, CONNECT_ATTEMPT_TIMEOUT_MS);
+  }
+
+  private clearAttemptTimer(): void {
+    if (this.attemptTimer !== null) {
+      clearTimeout(this.attemptTimer);
+      this.attemptTimer = null;
+    }
+  }
+
+  private attachSocket(instance: WebSocket): void {
+    this.activeSocket = instance;
+    socket = instance;
+  }
+
+  private detachSocket(): void {
+    stopKeepAlive();
+    this.activeSocket = null;
+    socket = null;
+  }
+
+  private teardownActiveSocket(): void {
+    this.clearAttemptTimer();
+    if (this.activeSocket) {
+      this.expectingClose = true;
+      try {
+        this.activeSocket.close();
+      } catch (error) {
+        console.error("[yetibrowser] failed to close socket", error);
+      }
+      this.detachSocket();
+    }
+  }
+
+  private selectNextPort(): number {
+    if (portMode === "manual") {
+      return this.manualPort;
+    }
+
+    if (this.pendingInitialAutoPort !== null) {
+      const initial = this.pendingInitialAutoPort;
+      this.pendingInitialAutoPort = null;
+      return initial;
+    }
+
+    if (this.preferLastSuccessful && this.lastSuccessfulPort !== null) {
+      this.preferLastSuccessful = false;
+      return this.lastSuccessfulPort;
+    }
+
+    const port = FALLBACK_WS_PORTS[this.nextAutoIndex];
+    this.nextAutoIndex = (this.nextAutoIndex + 1) % FALLBACK_WS_PORTS.length;
+    return port;
+  }
+
+  private resetAutoSequence(startPort: number): void {
+    const target = isAutoPort(startPort) ? startPort : DEFAULT_WS_PORT;
+    const startIndex = FALLBACK_WS_PORTS.indexOf(target);
+    this.pendingInitialAutoPort = target;
+    this.nextAutoIndex = (startIndex + 1) % FALLBACK_WS_PORTS.length;
+  }
+
+  private resetFailureCounters(): void {
+    this.failurePort = null;
+    this.failureCount = 0;
+    this.lastFailureAt = 0;
+    this.scanIterations = 0;
+  }
+
+  private recordFailure(port: number): void {
+    const now = Date.now();
+    if (this.failurePort !== port || now - this.lastFailureAt > FAILURE_RESET_WINDOW_MS) {
+      this.failurePort = port;
+      this.failureCount = 0;
+    }
+    this.failureCount += 1;
+    this.lastFailureAt = now;
+
+    if (this.lastSuccessfulPort === null) {
+      this.scanIterations += 1;
+    }
+
+    if (portMode === "auto" && this.failureCount >= 2) {
+      this.preferLastSuccessful = false;
+      if (this.lastSuccessfulPort === port) {
+        this.lastSuccessfulPort = null;
+      }
+    }
+  }
+
+  private computeDelay(): number {
+    if (portMode === "manual") {
+      const attempt = Math.min(
+        this.failureCount + 1,
+        Math.ceil(MANUAL_RETRY_MAX_DELAY_MS / MANUAL_RETRY_BASE_DELAY_MS),
+      );
+      return Math.min(MANUAL_RETRY_BASE_DELAY_MS * attempt, MANUAL_RETRY_MAX_DELAY_MS);
+    }
+
+    if (this.lastSuccessfulPort === null) {
+      return this.scanIterations >= FALLBACK_WS_PORTS.length * 3 ? AUTO_SCAN_SLOW_DELAY_MS : AUTO_SCAN_FAST_DELAY_MS;
+    }
+
+    return this.failureCount >= 3 ? AUTO_SCAN_SLOW_DELAY_MS : AUTO_RECOVERY_DELAY_MS;
+  }
+}
+
+const connectionManager = new WebSocketConnectionManager();
 
 chrome.runtime.onInstalled.addListener(() => {
   console.log("[yetibrowser] extension installed");
@@ -103,37 +519,52 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 
   if (STORAGE_KEYS.connectedTabId in changes) {
-    const value = changes[STORAGE_KEYS.connectedTabId]?.newValue;
-    connectedTabId = typeof value === "number" ? value : null;
-    console.log("[yetibrowser] connected tab changed", connectedTabId);
+   const value = changes[STORAGE_KEYS.connectedTabId]?.newValue;
+   connectedTabId = typeof value === "number" ? value : null;
+   console.log("[yetibrowser] connected tab changed", connectedTabId);
+  }
+  const modeChange = changes[STORAGE_KEYS.wsPortMode];
+  const portChange = changes[STORAGE_KEYS.wsPort];
+
+  if (modeChange) {
+    const parsed = modeChange.newValue === "manual" ? "manual" : DEFAULT_PORT_MODE;
+    if (parsed !== portMode) {
+      if (parsed === "manual") {
+        const rawPort = portChange?.newValue;
+        const manualPort =
+          typeof rawPort === "number" && Number.isFinite(rawPort) ? rawPort : wsPort;
+        portMode = "manual";
+        wsPort = isValidPort(manualPort) ? manualPort : DEFAULT_WS_PORT;
+        connectionManager.setManualMode(wsPort, { fromStorage: true });
+        setSocketStatus("connecting");
+      } else {
+        const rawPort = portChange?.newValue;
+        const autoPort =
+          typeof rawPort === "number" && Number.isFinite(rawPort) ? rawPort : wsPort;
+        portMode = "auto";
+        wsPort = isAutoPort(autoPort) ? autoPort : DEFAULT_WS_PORT;
+        connectionManager.setAutoMode(wsPort, { fromStorage: true });
+        setSocketStatus("connecting");
+      }
+    }
   }
 
-  if (STORAGE_KEYS.wsPort in changes) {
-    const value = changes[STORAGE_KEYS.wsPort]?.newValue;
-    const parsed = typeof value === "number" && Number.isFinite(value) ? value : DEFAULT_WS_PORT;
+  if (portChange) {
+    const parsed = typeof portChange.newValue === "number" && Number.isFinite(portChange.newValue)
+      ? portChange.newValue
+      : DEFAULT_WS_PORT;
+
     if (parsed === wsPort) {
       return;
     }
-    wsPort = parsed;
-    updateFallbackIndex(parsed);
-    console.log("[yetibrowser] websocket port changed", wsPort);
-    reconnectWebSocket();
-  }
 
-  if (STORAGE_KEYS.wsPortMode in changes) {
-    const value = changes[STORAGE_KEYS.wsPortMode]?.newValue;
-    const parsed = value === "manual" ? "manual" : DEFAULT_PORT_MODE;
-    if (parsed === portMode) {
-      return;
+    wsPort = parsed;
+
+    if (portMode === "manual") {
+      connectionManager.updateManualPortFromStorage(parsed, { scheduleReconnect: !modeChange });
+    } else if (portMode === "auto") {
+      connectionManager.updateAutoPortFromStorage(parsed, { scheduleReconnect: !modeChange });
     }
-    portMode = parsed;
-    if (portMode === "auto") {
-      wsPort = DEFAULT_WS_PORT;
-      fallbackPortIndex = 0;
-      fallbackAdvancedForCurrentAttempt = false;
-    }
-    console.log("[yetibrowser] websocket port mode changed", portMode);
-    reconnectWebSocket();
   }
 });
 
@@ -155,271 +586,20 @@ async function bootstrap(): Promise<void> {
   }
 
   if (typeof storedPort === "number" && Number.isFinite(storedPort)) {
-    wsPort = storedPort;
-    updateFallbackIndex(storedPort);
+    wsPort =
+      portMode === "auto" ? (isAutoPort(storedPort) ? storedPort : DEFAULT_WS_PORT) : storedPort;
   }
 
-  connectWebSocket();
-  void updateBadge();
-}
-
-function connectWebSocket(): void {
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    return;
-  }
-
-  if (socket && socket.readyState === WebSocket.CONNECTING) {
-    return;
-  }
-
-  // Clear any pending reconnect since we're connecting now
-  if (reconnectTimeout !== null) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
-  }
-  clearAttemptTimeout();
-  reconnectPlannedAfterClose = false;
-
-  expectedSocketClose = false;
-  socketOpenedInCurrentAttempt = false;
-  fallbackAdvancedForCurrentAttempt = false;
-  fallbackWrappedInCurrentAttempt = false;
-  if (portMode === "auto") {
-    ensureAutoScanWindow();
-  }
-  socketStatus = "connecting";
-  void updateBadge();
-
-  console.log(`[yetibrowser] Trying port ${wsPort} (mode: ${portMode})`);
-  try {
-    socket = new WebSocket(`ws://localhost:${wsPort}`);
-  } catch (error) {
-    console.error("[yetibrowser] failed to create WebSocket", error);
-    let delay = AUTO_FAST_RETRY_DELAY_MS;
-    if (portMode === "auto") {
-      advanceFallbackPort();
-      delay = getAutoReconnectDelay();
-    }
-    socketStatus = "connecting";
-    void updateBadge();
-    scheduleReconnect(delay);
-    return;
-  }
-
-  const attemptToken = ++activeAttemptToken;
-  startAttemptTimeout(attemptToken);
-
-  const currentSocket = socket;
-
-  currentSocket.addEventListener("open", () => {
-    if (socket !== currentSocket) {
-      try {
-        currentSocket.close();
-      } catch (error) {
-        console.debug("[yetibrowser] stale socket open event", error);
-      }
-      return;
-    }
-    clearAttemptTimeout();
-    console.log("[yetibrowser] connected to MCP server");
-    if (reconnectTimeout !== null) {
-      clearTimeout(reconnectTimeout);
-      reconnectTimeout = null;
-    }
-    socketOpenedInCurrentAttempt = true;
-    socketStatus = "open";
-    autoScanStartedAt = 0;
-    persistWsPortIfNeeded(wsPort).catch((error) => {
-      console.error("[yetibrowser] failed to persist websocket port", error);
-    });
-    sendHello(currentSocket);
-    startKeepAlive();
-    void updateBadge();
-  });
-
-  currentSocket.addEventListener("message", (event) => {
-    if (socket !== currentSocket) {
-      return;
-    }
-    handleSocketMessage(event.data).catch((error) => {
-      console.error("[yetibrowser] failed to handle message", error);
-    });
-  });
-
-  currentSocket.addEventListener("close", () => {
-    if (socket !== currentSocket) {
-      return;
-    }
-    clearAttemptTimeout();
-    console.warn("[yetibrowser] MCP socket closed");
-    socket = null;
-    stopKeepAlive();
-
-    const intentional = expectedSocketClose;
-    expectedSocketClose = false;
-    if (intentional) {
-      const reconnecting = reconnectPlannedAfterClose;
-      reconnectPlannedAfterClose = false;
-      if (!reconnecting) {
-        socketStatus = "disconnected";
-        void updateBadge();
-      }
-      return; // Caller will handle follow-up if needed
-    }
-
-    reconnectPlannedAfterClose = false;
-    socketStatus = "connecting";
-    void updateBadge();
-
-    if (portMode === "auto" && socketOpenedInCurrentAttempt) {
-      restartAutoScanWindow();
-    }
-
-    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
-      advanceFallbackPort();
-      const delay = getAutoReconnectDelay();
-      scheduleReconnect(delay);
-    } else {
-      const delay = socketOpenedInCurrentAttempt ? AUTO_FAST_RETRY_DELAY_MS : getAutoReconnectDelay();
-      scheduleReconnect(delay);
-    }
-  });
-
-  currentSocket.addEventListener("error", () => {
-    if (socket !== currentSocket) {
-      return;
-    }
-    // Error event is always followed by close event, so we don't need to handle reconnection here
-    if (!socketOpenedInCurrentAttempt && portMode === "auto") {
-      advanceFallbackPort();
-    }
-  });
-}
-
-function reconnectWebSocket(options: { resetAutoScan?: boolean } = {}): void {
-  const { resetAutoScan = false } = options;
-
-  if (resetAutoScan && portMode === "auto") {
-    wsPort = FALLBACK_WS_PORTS[0];
-    fallbackPortIndex = 0;
-    fallbackAdvancedForCurrentAttempt = false;
-    fallbackWrappedInCurrentAttempt = false;
-    autoScanStartedAt = 0;
-  }
-
-  if (socket) {
-    expectedSocketClose = true;
-    reconnectPlannedAfterClose = true;
-    try {
-      socket.close();
-    } catch (error) {
-      console.error("[yetibrowser] failed to close socket before reconnect", error);
-    }
-    socket = null;
-  }
-  stopKeepAlive();
-  clearAttemptTimeout();
-  if (reconnectTimeout !== null) {
-    clearTimeout(reconnectTimeout);
-    reconnectTimeout = null;
-  }
-  if (portMode === "auto") {
-    restartAutoScanWindow();
-  }
-  socketStatus = "connecting";
-  void updateBadge();
-  scheduleReconnect(0);
+  connectionManager.initialize(portMode, wsPort);
+  connectionManager.start();
 }
 
 function triggerManualReconnect(): void {
-  if (portMode === "auto") {
-    void setPortConfiguration("auto", undefined);
-    return;
-  }
-
-  void setPortConfiguration("manual", wsPort);
-}
-
-function scheduleReconnect(delayMs: number): void {
-  if (reconnectTimeout !== null) {
-    clearTimeout(reconnectTimeout);
-  }
-
-  reconnectTimeout = setTimeout(() => {
-    reconnectTimeout = null;
-    connectWebSocket();
-  }, Math.max(0, delayMs));
-}
-
-function advanceFallbackPort(): void {
-  if (portMode !== "auto") {
-    return;
-  }
-  if (fallbackAdvancedForCurrentAttempt) {
-    return;
-  }
-  const nextIndex = (fallbackPortIndex + 1) % FALLBACK_WS_PORTS.length;
-  fallbackPortIndex = nextIndex;
-  const nextPort = FALLBACK_WS_PORTS[nextIndex];
-  console.log(`[yetibrowser] Port ${wsPort} failed, trying port ${nextPort}`);
-  wsPort = nextPort;
-  fallbackAdvancedForCurrentAttempt = true;
-  fallbackWrappedInCurrentAttempt = nextIndex === 0;
-}
-
-function ensureAutoScanWindow(): void {
-  if (autoScanStartedAt === 0) {
-    autoScanStartedAt = Date.now();
-  }
-}
-
-function restartAutoScanWindow(): void {
-  autoScanStartedAt = Date.now();
-}
-
-function isInFastAutoScanWindow(): boolean {
-  if (autoScanStartedAt === 0) {
-    return true;
-  }
-  return Date.now() - autoScanStartedAt < AUTO_FAST_SCAN_WINDOW_MS;
-}
-
-function getAutoReconnectDelay(): number {
-  if (isInFastAutoScanWindow()) {
-    return AUTO_FAST_RETRY_DELAY_MS;
-  }
-  return fallbackWrappedInCurrentAttempt ? AUTO_SLOW_RETRY_DELAY_MS : AUTO_FAST_RETRY_DELAY_MS;
-}
-
-function startAttemptTimeout(token: number): void {
-  clearAttemptTimeout();
-  attemptTimeout = setTimeout(() => {
-    if (token !== activeAttemptToken) {
-      return;
-    }
-    if (!socket || socket.readyState !== WebSocket.CONNECTING) {
-      return;
-    }
-    console.warn(`[yetibrowser] Connection attempt on port ${wsPort} timed out`);
-    try {
-      socket.close();
-    } catch (error) {
-      console.error("[yetibrowser] failed to close timed out socket", error);
-    }
-  }, AUTO_CONNECT_ATTEMPT_TIMEOUT_MS);
-}
-
-function clearAttemptTimeout(): void {
-  if (attemptTimeout !== null) {
-    clearTimeout(attemptTimeout);
-    attemptTimeout = null;
-  }
-}
-
-function updateFallbackIndex(port: number): void {
-  if (portMode === "auto" && isAutoPort(port)) {
-    fallbackPortIndex = FALLBACK_WS_PORTS.indexOf(port);
-  }
+  const options =
+    portMode === "auto"
+      ? { immediate: true, reason: "manual", resetAuto: true, preferLastSuccessful: false }
+      : { immediate: true, reason: "manual" };
+  connectionManager.triggerReconnect(options);
 }
 
 function isAutoPort(port: number): boolean {
@@ -444,53 +624,14 @@ async function setPortConfiguration(mode: PortMode, port: number | undefined): P
     }
     portMode = "manual";
     wsPort = port!;
-    fallbackPortIndex = 0;
-    fallbackAdvancedForCurrentAttempt = false;
-    autoScanStartedAt = 0;
-    // Don't await storage, do it async for speed
-    chrome.storage.local.set({
-      [STORAGE_KEYS.wsPort]: wsPort,
-      [STORAGE_KEYS.wsPortMode]: portMode,
-    });
-    socketStatus = "connecting";
-    void updateBadge();
-    // Close and reconnect immediately
-    if (socket) {
-      expectedSocketClose = true;
-      reconnectPlannedAfterClose = true;
-      socket.close();
-      socket = null;
-    }
-    queueMicrotask(() => connectWebSocket());
+    connectionManager.setManualMode(port!, { fromStorage: false });
     return;
   }
 
-  // Reset everything for auto mode to start fresh from 9010
+  const candidate = typeof port === "number" && Number.isInteger(port) ? port : wsPort;
   portMode = "auto";
-  wsPort = FALLBACK_WS_PORTS[0]; // Always start from first port (9010)
-  fallbackPortIndex = 0;
-  fallbackAdvancedForCurrentAttempt = false;
-  autoScanStartedAt = 0;
-  console.log("[yetibrowser] Switching to auto mode, starting from port", wsPort);
-  // Don't await storage, do it async for speed
-  chrome.storage.local.set({
-    [STORAGE_KEYS.wsPort]: wsPort,
-    [STORAGE_KEYS.wsPortMode]: portMode,
-  });
-  socketStatus = "connecting";
-  void updateBadge();
-  // Close existing connection and start fresh
-  if (socket) {
-    expectedSocketClose = true;
-    reconnectPlannedAfterClose = true;
-    try {
-      socket.close();
-    } catch (error) {
-      console.error("[yetibrowser] failed to close socket", error);
-    }
-    socket = null;
-  }
-  queueMicrotask(() => connectWebSocket());
+  wsPort = isAutoPort(candidate) ? candidate : DEFAULT_WS_PORT;
+  connectionManager.setAutoMode(wsPort, { fromStorage: false });
 }
 
 function isValidPort(value: number | undefined): value is number {
@@ -649,6 +790,43 @@ async function dispatchCommand<K extends CommandName>(
     case "pageState": {
       const state = await capturePageState();
       return state as CommandResult<K>;
+    }
+    case "waitFor": {
+      const { selector, timeoutMs, visible } = payload as CommandPayloadMap["waitFor"];
+      await waitForSelector(selector, timeoutMs ?? 5_000, visible ?? false);
+      return { ok: true } as CommandResult<K>;
+    }
+    case "fillForm": {
+      const { fields } = payload as CommandPayloadMap["fillForm"];
+      const result = await fillFormFields(fields ?? []);
+      return result as CommandResult<K>;
+    }
+    case "evaluate": {
+      const { script, args, timeoutMs } = payload as CommandPayloadMap["evaluate"];
+      const evaluationPromise = evaluateInPage(script, args);
+      const value =
+        typeof timeoutMs === "number" && timeoutMs > 0
+          ? await Promise.race([
+              evaluationPromise,
+              new Promise<unknown>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error(`Script evaluation timed out after ${timeoutMs}ms`)),
+                  timeoutMs,
+                ),
+              ),
+            ])
+          : await evaluationPromise;
+      return { value } as CommandResult<K>;
+    }
+    case "handleDialog": {
+      const { action, promptText } = payload as CommandPayloadMap["handleDialog"];
+      await handleJavaScriptDialog(action, promptText);
+      return { ok: true } as CommandResult<K>;
+    }
+    case "drag": {
+      const { fromSelector, toSelector, steps, description } = payload as CommandPayloadMap["drag"];
+      await dragElement(fromSelector, toSelector, steps ?? 12, description);
+      return { ok: true } as CommandResult<K>;
     }
     default:
       throw new Error(`Unsupported command ${command satisfies never}`);
@@ -998,8 +1176,11 @@ function delay(ms: number): Promise<void> {
 }
 
 type ScriptResponse<R> = { ok: true; value?: R } | { error: string };
+
+type FillFormFieldRequest = CommandPayloadMap["fillForm"]["fields"][number];
+
 async function runInPage<A extends unknown[], R>(
-  func: (...args: A) => ScriptResponse<R>,
+  func: (...args: A) => ScriptResponse<R> | Promise<ScriptResponse<R>>,
   args: A,
 ): Promise<R | undefined> {
   const tab = await ensureTab();
@@ -1018,6 +1199,401 @@ async function runInPage<A extends unknown[], R>(
     throw new Error(response.error);
   }
   return response.value;
+}
+
+async function waitForSelector(
+  selector: string,
+  timeoutMs: number,
+  requireVisible: boolean,
+): Promise<void> {
+  await runInPage(
+    (sel: string, timeout: number, visible: boolean) => {
+      const deadline = timeout > 0 ? Date.now() + timeout : Number.POSITIVE_INFINITY;
+      const visibilityCheck = (element: Element) => {
+        if (!visible) {
+          return true;
+        }
+        const rect = element.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+          return false;
+        }
+        const style = window.getComputedStyle(element);
+        if (style.visibility === "hidden" || style.display === "none" || Number(style.opacity) === 0) {
+          return false;
+        }
+        return true;
+      };
+
+      const locate = () => {
+        const element = document.querySelector(sel);
+        if (!element) {
+          return null;
+        }
+        if (!visibilityCheck(element)) {
+          return null;
+        }
+        return element;
+      };
+
+      return new Promise<ScriptResponse<void>>((resolve) => {
+        const existing = locate();
+        if (existing) {
+          resolve({ ok: true });
+          return;
+        }
+
+        const abort = () => {
+          observer.disconnect();
+          clearInterval(intervalId);
+        };
+
+        const observer = new MutationObserver(() => {
+          const match = locate();
+          if (match) {
+            abort();
+            resolve({ ok: true });
+          }
+        });
+
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: visible,
+          attributeFilter: visible ? ["style", "class", "hidden", "aria-hidden"] : undefined,
+        });
+
+        const intervalId = window.setInterval(() => {
+          const match = locate();
+          if (match) {
+            abort();
+            resolve({ ok: true });
+            return;
+          }
+          if (Date.now() > deadline) {
+            abort();
+            resolve({ error: `Timed out after ${timeout}ms waiting for selector ${sel}` });
+          }
+        }, 50);
+
+        if (!Number.isFinite(deadline)) {
+          // No timeout configured; keep a lightweight RAF poll to ensure resolution.
+          const frameCheck = () => {
+            const match = locate();
+            if (match) {
+              abort();
+              resolve({ ok: true });
+              return;
+            }
+            window.requestAnimationFrame(frameCheck);
+          };
+          window.requestAnimationFrame(frameCheck);
+        }
+      });
+    },
+    [selector, timeoutMs, requireVisible],
+  );
+}
+
+async function fillFormFields(
+  fields: FillFormFieldRequest[],
+): Promise<{ filled: number; attempted: number; errors: string[] }> {
+  let filled = 0;
+  const errors: string[] = [];
+  const submitSelectors = new Set<string>();
+
+  for (const field of fields) {
+    try {
+      const description = field.description ?? field.selector;
+      const targetType = field.type ?? "auto";
+
+      if (Array.isArray(field.values) && field.values.length > 0) {
+        await selectOptions(field.selector, field.values, field.description);
+        filled++;
+      } else if (targetType === "select" && typeof field.value !== "undefined") {
+        await selectOptions(field.selector, [String(field.value)], field.description);
+        filled++;
+      } else if (typeof field.value === "boolean" || targetType === "checkbox") {
+        const desired = typeof field.value === "boolean" ? field.value : coerceBoolean(field.value);
+        await setCheckboxState(field.selector, desired, description);
+        filled++;
+      } else if (targetType === "radio") {
+        await setRadioState(field.selector, field.value, description);
+        filled++;
+      } else {
+        const text =
+          field.value === null || typeof field.value === "undefined" ? "" : String(field.value);
+        await typeIntoElement(field.selector, text, false, field.description);
+        filled++;
+      }
+
+      if (field.submit) {
+        submitSelectors.add(field.selector);
+      }
+    } catch (error) {
+      errors.push(
+        error instanceof Error ? error.message : `Failed to fill ${field.selector}: ${String(error)}`,
+      );
+    }
+  }
+
+  for (const selector of submitSelectors) {
+    try {
+      await submitContainingForm(selector);
+    } catch (error) {
+      errors.push(
+        error instanceof Error
+          ? error.message
+          : `Failed to submit form for ${selector}: ${String(error)}`,
+      );
+    }
+  }
+
+  return { filled, attempted: fields.length, errors };
+}
+
+function coerceBoolean(value: unknown): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return ["true", "1", "yes", "on"].includes(normalized);
+  }
+  return false;
+}
+
+async function setCheckboxState(selector: string, checked: boolean, description?: string): Promise<void> {
+  await runInPage(
+    (sel: string, state: boolean, label: string | null) => {
+      const element = document.querySelector(sel);
+      if (!(element instanceof HTMLInputElement) || element.type !== "checkbox") {
+        return { error: `Element is not a checkbox: ${label ?? sel}` };
+      }
+      if (element.checked === state) {
+        return { ok: true };
+      }
+      element.checked = state;
+      element.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      return { ok: true };
+    },
+    [selector, checked, description ?? null],
+  );
+}
+
+async function setRadioState(selector: string, value: unknown, description?: string): Promise<void> {
+  await runInPage(
+    (sel: string, selected: unknown, label: string | null) => {
+      const element = document.querySelector(sel);
+      if (!(element instanceof HTMLInputElement) || element.type !== "radio") {
+        return { error: `Element is not a radio button: ${label ?? sel}` };
+      }
+      if (typeof selected === "string" || typeof selected === "number") {
+        const stringValue = String(selected);
+        element.checked = element.value === stringValue;
+      } else if (typeof selected === "boolean") {
+        element.checked = selected;
+      } else {
+        element.checked = true;
+      }
+      element.dispatchEvent(new Event("input", { bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event("change", { bubbles: true, cancelable: true }));
+      return { ok: true };
+    },
+    [selector, value, description ?? null],
+  );
+}
+
+async function submitContainingForm(selector: string): Promise<void> {
+  await runInPage(
+    (sel: string) => {
+      const element = document.querySelector(sel);
+      if (!element) {
+        return { error: `Element not found: ${sel}` };
+      }
+      const form =
+        element instanceof HTMLFormElement
+          ? element
+          : element.closest("form") ?? undefined;
+      if (!form) {
+        return { error: "No containing form to submit" };
+      }
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+      } else {
+        form.submit();
+      }
+      return { ok: true };
+    },
+    [selector],
+  );
+}
+
+async function evaluateInPage(
+  script: string,
+  args: unknown[] | undefined,
+): Promise<unknown> {
+  return await runInPage(
+    async (source: string, functionArgs: unknown[]) => {
+      let fn: unknown;
+      try {
+        fn = globalThis.eval(`(${source})`);
+      } catch (error) {
+        return {
+          error: `Failed to parse script: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      if (typeof fn !== "function") {
+        return { error: "Script must evaluate to a function" };
+      }
+
+      try {
+        const result = await (fn as (...innerArgs: unknown[]) => unknown)(...functionArgs);
+        let cloned: unknown;
+        if (typeof structuredClone === "function") {
+          cloned = structuredClone(result);
+        } else {
+          cloned = JSON.parse(JSON.stringify(result));
+        }
+        return { ok: true, value: cloned };
+      } catch (error) {
+        return { error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    [script, args ?? []],
+  );
+}
+
+async function handleJavaScriptDialog(action: "accept" | "dismiss", promptText?: string): Promise<void> {
+  const tab = await ensureTab();
+  const target: chrome.debugger.Debuggee = { tabId: tab.id! };
+  await attachDebugger(target);
+  try {
+    await sendDebuggerCommand(target, "Page.enable");
+    await sendDebuggerCommand(target, "Page.handleJavaScriptDialog", {
+      accept: action === "accept",
+      promptText,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof Error ? error.message : `Failed to handle dialog: ${String(error)}`,
+    );
+  } finally {
+    await detachDebugger(target);
+  }
+}
+
+async function dragElement(
+  fromSelector: string,
+  toSelector: string,
+  steps: number,
+  description?: string,
+): Promise<void> {
+  const resolvedSteps =
+    typeof steps === "number" && Number.isFinite(steps) ? Math.max(1, Math.floor(steps)) : 12;
+  await runInPage(
+    (
+      sourceSelector: string,
+      targetSelector: string,
+      stepCount: number,
+      label: string | null,
+    ) => {
+      const source = document.querySelector(sourceSelector);
+      const target = document.querySelector(targetSelector);
+      if (!source || !(source instanceof HTMLElement)) {
+        return { error: `Drag source not found: ${label ?? sourceSelector}` };
+      }
+      if (!target || !(target instanceof HTMLElement)) {
+        return { error: `Drop target not found: ${label ?? targetSelector}` };
+      }
+
+      const startRect = source.getBoundingClientRect();
+      const endRect = target.getBoundingClientRect();
+      const startX = startRect.left + startRect.width / 2;
+      const startY = startRect.top + startRect.height / 2;
+      const endX = endRect.left + endRect.width / 2;
+      const endY = endRect.top + endRect.height / 2;
+
+      const dataTransfer = typeof DataTransfer === "function" ? new DataTransfer() : undefined;
+      const pointerId = 1;
+
+      const firePointerEvent = (type: string, x: number, y: number, buttons: number) => {
+        const targetElement = document.elementFromPoint(x, y) as HTMLElement | null;
+        (targetElement ?? document.body).dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId,
+            pointerType: "mouse",
+            clientX: x,
+            clientY: y,
+            buttons,
+          }),
+        );
+      };
+
+      const fireDragEvent = (element: HTMLElement, type: string, x: number, y: number) => {
+        if (typeof DragEvent !== "function") {
+          return;
+        }
+        element.dispatchEvent(
+          new DragEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: x,
+            clientY: y,
+            dataTransfer,
+          }),
+        );
+      };
+
+      firePointerEvent("pointerover", startX, startY, 0);
+      firePointerEvent("pointerenter", startX, startY, 0);
+      firePointerEvent("pointerdown", startX, startY, 1);
+      source.dispatchEvent(
+        new MouseEvent("mousedown", {
+          bubbles: true,
+          cancelable: true,
+          clientX: startX,
+          clientY: startY,
+          buttons: 1,
+        }),
+      );
+      fireDragEvent(source, "dragstart", startX, startY);
+
+      const totalSteps =
+        typeof stepCount === "number" && Number.isFinite(stepCount) && stepCount > 0
+          ? Math.floor(stepCount)
+          : 12;
+      for (let i = 1; i <= totalSteps; i++) {
+        const progress = i / totalSteps;
+        const currentX = startX + (endX - startX) * progress;
+        const currentY = startY + (endY - startY) * progress;
+        firePointerEvent("pointermove", currentX, currentY, 1);
+        fireDragEvent(target, "dragover", currentX, currentY);
+      }
+
+      fireDragEvent(target, "drop", endX, endY);
+      firePointerEvent("pointerup", endX, endY, 0);
+      target.dispatchEvent(
+        new MouseEvent("mouseup", {
+          bubbles: true,
+          cancelable: true,
+          clientX: endX,
+          clientY: endY,
+          buttons: 0,
+        }),
+      );
+      firePointerEvent("pointerout", endX, endY, 0);
+      firePointerEvent("pointerleave", endX, endY, 0);
+
+      return { ok: true };
+    },
+    [fromSelector, toSelector, resolvedSteps, description ?? null],
+  );
 }
 
 async function simulateKeyPress(key: string): Promise<void> {

@@ -6,6 +6,16 @@ This file outlines the steps we followed for preparing the MCP server and browse
 
 We publish two workspaces: shared types and the MCP server CLI.
 
+### Automated prep
+
+Run the release helper to bump versions, rebuild, and refresh lockfiles:
+
+```bash
+npm run prepare-release -- 1.1.0   # replace with the next version
+```
+
+The script updates all package.json files, sets the server’s dependency on the shared package, runs `npm install`, and rebuilds both workspaces. Review the git diff before publishing.
+
 ### @yetidevworks/shared (types)
 
 1. Ensure `package.json` contains:

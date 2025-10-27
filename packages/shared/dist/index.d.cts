@@ -81,6 +81,36 @@ interface CommandPayloadMap {
     };
     getConsoleLogs: EmptyPayload;
     pageState: EmptyPayload;
+    waitFor: {
+        selector: string;
+        timeoutMs?: number;
+        visible?: boolean;
+    };
+    fillForm: {
+        fields: Array<{
+            selector: string;
+            value?: string | number | boolean | null;
+            values?: string[];
+            submit?: boolean;
+            description?: string;
+            type?: "auto" | "text" | "textarea" | "select" | "checkbox" | "radio" | "contentEditable";
+        }>;
+    };
+    evaluate: {
+        script: string;
+        args?: unknown[];
+        timeoutMs?: number;
+    };
+    handleDialog: {
+        action: "accept" | "dismiss";
+        promptText?: string;
+    };
+    drag: {
+        fromSelector: string;
+        toSelector: string;
+        steps?: number;
+        description?: string;
+    };
 }
 interface CommandResultMap {
     ping: {
@@ -129,6 +159,23 @@ interface CommandResultMap {
     };
     getConsoleLogs: ConsoleLogEntry[];
     pageState: PageStateSnapshot;
+    waitFor: {
+        ok: true;
+    };
+    fillForm: {
+        filled: number;
+        attempted: number;
+        errors: string[];
+    };
+    evaluate: {
+        value: unknown;
+    };
+    handleDialog: {
+        ok: true;
+    };
+    drag: {
+        ok: true;
+    };
 }
 type CommandName = keyof CommandPayloadMap;
 type CommandPayload<K extends CommandName> = CommandPayloadMap[K];
@@ -174,6 +221,11 @@ declare const TOOL_NAMES: {
     readonly SCREENSHOT: "browser_screenshot";
     readonly CONSOLE_LOGS: "browser_get_console_logs";
     readonly PAGE_STATE: "browser_page_state";
+    readonly WAIT_FOR: "browser_wait_for";
+    readonly FILL_FORM: "browser_fill_form";
+    readonly EVALUATE: "browser_evaluate";
+    readonly HANDLE_DIALOG: "browser_handle_dialog";
+    readonly DRAG: "browser_drag";
 };
 type ToolName = (typeof TOOL_NAMES)[keyof typeof TOOL_NAMES];
 interface ToolResponse {

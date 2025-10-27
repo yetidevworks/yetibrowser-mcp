@@ -13,7 +13,12 @@ var TOOL_NAMES = {
   SELECT_OPTION: "browser_select_option",
   SCREENSHOT: "browser_screenshot",
   CONSOLE_LOGS: "browser_get_console_logs",
-  PAGE_STATE: "browser_page_state"
+  PAGE_STATE: "browser_page_state",
+  WAIT_FOR: "browser_wait_for",
+  FILL_FORM: "browser_fill_form",
+  EVALUATE: "browser_evaluate",
+  HANDLE_DIALOG: "browser_handle_dialog",
+  DRAG: "browser_drag"
 };
 export {
   TOOL_NAMES
