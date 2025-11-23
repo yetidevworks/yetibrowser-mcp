@@ -38,7 +38,7 @@ The script updates all package.json files, sets the server’s dependency on the
    ```toml
    [mcp_servers.yetibrowser-mcp]
    command = "npx"
-   args = ["yetibrowser-mcp", "--ws-port", "9010"]
+   args = ["-y", "@yetidevworks/server", "--ws-port", "9010"]
    ```
 
 ### Local NPX Smoke Test

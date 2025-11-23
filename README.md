@@ -60,26 +60,26 @@ YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflo
   ```toml
   [mcp_servers.yetibrowser-mcp]
   command = "npx"
-  args = ["yetibrowser-mcp"]
+  args = ["-y", "@yetidevworks/server"]
   ```
 - Restart `codex` CLI command; you should see `yetibrowser-mcp` listing under `/mcp` tools.
-- If you want to provide a specific port, use this format for the args entry: `args = ["yetibrowser-mcp", "--ws-port", "9010"]`
+- If you want to provide a specific port, use this format for the args entry: `args = ["-y", "@yetidevworks/server", "--ws-port", "9010"]`
 
 ### Claude Code
 
-- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx yetibrowser-mcp` (or run the locally built CLI).
+- Make sure the extension is installed and connected to a tab, then start the MCP server with `npx -y @yetidevworks/server` (or run the locally built CLI).
 - Add the server entry to `~/Library/Application Support/Claude/claude_desktop_config.json` (see the example in [`docs/publishing.md`](docs/publishing.md)).
 - Restart `claude` so it picks up the new MCP server; you should see `yetibrowser-mcp` listed under the `/mcp` tools menu once the extension connects.
 
 ### Other MCP-aware clients
 
-- Any MCP client can connect by spawning the CLI (`npx yetibrowser-mcp`) or optionally provide a specific port, e.g. `npx yetibrowser-mcp --ws-port 9010`.
+- Any MCP client can connect by spawning the CLI (`npx -y @yetidevworks/server`) or optionally provide a specific port, e.g. `npx -y @yetidevworks/server --ws-port 9010`.
 - The server exposes the standard MCP transport over stdio, so use whatever configuration mechanism your client supports to run the command above when a tab is connected.
 
 ### MCP Inspector
 
 - For testing and debugging outside a coding agent.
-- `npx @modelcontextprotocol/inspector yetibrowser-mcp -- --ws-port 9010` to run and inspect the MCP server in conjunction with the YetiBrowser MCP browser extension.
+- `npx @modelcontextprotocol/inspector npx -y @yetidevworks/server -- --ws-port 9010` to run and inspect the MCP server in conjunction with the YetiBrowser MCP browser extension.
 
 ### Troubleshooting
 
