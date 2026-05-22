@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> This project has been archived. It was built to address the lack of browser control in AI agents such as Claude and Codex, but the agents now have these functions built in without the need for a dedicated MCP based solution.
+
 # YetiBrowser MCP
 
 YetiBrowser MCP is a fully open-source implementation of the Browser MCP workflow. It links a Node-based MCP server with Chrome/Firefox extensions so Model Context Protocol clients—Codex/Claude Code, Cursor, Windsurf, MCP Inspector, or your own tools—can automate a real browser tab while keeping every byte on your machine and auditable.
